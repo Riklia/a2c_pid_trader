@@ -92,3 +92,27 @@ def test_on_step_callback_receives_reports_in_order():
     # sorted by construction
     assert [r.step for r in seen] == [r.step for r in seen]
     assert len(seen) == len(env.data) - 1
+
+
+def test_train_loop_has_no_look_ahead_on_actions():
+    from tests.learning.test_regime_shift_learning import _make_regime_shift_data, _fresh_a2c
+
+    full_data = _make_regime_shift_data(500, 250, seed=42)
+    cutoff_idx = 300
+    truncated = full_data.iloc[:cutoff_idx]
+
+    env_full = TradingEnv(full_data, fee_rate=0.0)
+    ctrl_full = _fresh_a2c(seed=42)
+    train_one_pass(env_full, ctrl_full, TrainConfig(lr=5e-3), target_vol=0.6)
+
+    env_trunc = TradingEnv(truncated, fee_rate=0.0)
+    ctrl_trunc = _fresh_a2c(seed=42)
+    train_one_pass(env_trunc, ctrl_trunc, TrainConfig(lr=5e-3), target_vol=0.6)
+
+    # actions taken in the first cutoff-1 steps should be bit-identical
+    actions_full = env_full.position_history[:cutoff_idx]
+    actions_trunc = env_trunc.position_history[:cutoff_idx]
+
+    for i, (a, b) in enumerate(zip(actions_full, actions_trunc)):
+        assert abs(a - b) < 1e-9, f"look-ahead detected at step {i}: {a} vs {b}"
+

@@ -46,9 +46,19 @@ def varying_hourly_ohlcv():
 
 @pytest.fixture
 def eight_hour_funding():
-    """Funding updates at hour 0 and hour 8, matching hourly_ohlcv's range."""
-    idx = pd.to_datetime(["2024-01-01 00:00", "2024-01-01 08:00"])
-    return pd.DataFrame({"mark_price": [100.0, 105.0], "funding": [0.0001, 0.0002]}, index=idx)
+    """Funding snapshots: several per settlement cycle, countdown in
+    time_left_seconds, one reset (upward jump) at 08:00 marking settlement."""
+    idx = pd.to_datetime([
+        "2024-01-01 00:00",  # mid-cycle snapshot, 4h left
+        "2024-01-01 04:00",  # snapshot closer to settlement
+        "2024-01-01 07:59",  # last snapshot before settlement
+        "2024-01-01 08:00",  # first snapshot AFTER settlement: countdown reset
+    ])
+    return pd.DataFrame({
+        "mark_price": [100.0, 101.0, 102.0, 105.0],
+        "funding": [0.0001, 0.00012, 0.00013, 0.0002],
+        "time_left_seconds": [14400, 200, 60, 28800],  # upward jump at 08:00
+    }, index=idx)
 
 
 @pytest.fixture
@@ -106,7 +116,8 @@ def test_funding_is_forward_filled_between_updates(hourly_ohlcv, eight_hour_fund
     result = features.align_funding_to_ohlcv(hourly_ohlcv, eight_hour_funding, freq="1h")
 
     expected_mark_price = pd.Series(
-        [100.0] * 8 + [105.0], index=hourly_ohlcv.index, name="mark_price",
+        [100.0, 100.0, 100.0, 100.0, 101.0, 101.0, 101.0, 102.0, 105.0],
+        index=hourly_ohlcv.index, name="mark_price",
     )
     pd.testing.assert_series_equal(result["mark_price"], expected_mark_price, check_freq=False)
 
@@ -114,15 +125,15 @@ def test_funding_is_forward_filled_between_updates(hourly_ohlcv, eight_hour_fund
 def test_funding_does_not_leak_from_the_future(hourly_ohlcv, eight_hour_funding):
     result = features.align_funding_to_ohlcv(hourly_ohlcv, eight_hour_funding, freq="1h")
 
-    assert result.loc["2024-01-01 07:00", "mark_price"] == 100.0
+    # snapshot at 07:59 lands in bar 07:00 (bar closes at 08:00, so no look-ahead);
+    # the post-settlement snapshot at 08:00 must not appear before bar 08:00
+    assert result.loc["2024-01-01 07:00", "mark_price"] == 102.0
     assert result.loc["2024-01-01 08:00", "mark_price"] == 105.0
 
-
 def test_funding_off_grid_update_is_captured_within_its_bar(hourly_ohlcv):
-    """An update at 08:30 lands in the bar [08:00, 09:00), which only
-    closes at 09:00 - so it's known by the time that bar's close is known."""
     funding = pd.DataFrame(
-        {"mark_price": [100.0, 108.0], "funding": [0.0001, 0.0005]},
+        {"mark_price": [100.0, 108.0], "funding": [0.0001, 0.0005],
+         "time_left_seconds": [14400, 27000]},
         index=pd.to_datetime(["2024-01-01 00:00", "2024-01-01 08:30"]),
     )
 
@@ -134,7 +145,7 @@ def test_funding_off_grid_update_is_captured_within_its_bar(hourly_ohlcv):
 
 def test_funding_is_nan_before_first_observation(hourly_ohlcv):
     funding = pd.DataFrame(
-        {"mark_price": [105.0], "funding": [0.0002]},
+        {"mark_price": [105.0], "funding": [0.0002], "time_left_seconds": [14400]},
         index=pd.to_datetime(["2024-01-01 03:00"]),
     )
 
@@ -277,3 +288,25 @@ def test_funding_settlement_flag_marks_only_real_observations(hourly_ohlcv, eigh
         [True] + [False] * 7 + [True], index=hourly_ohlcv.index, name="is_funding_settlement",
     )
     pd.testing.assert_series_equal(result["is_funding_settlement"], expected, check_freq=False)
+
+def test_funding_settlement_flag_marks_only_countdown_resets(hourly_ohlcv, eight_hour_funding):
+    result = features.align_funding_to_ohlcv(hourly_ohlcv, eight_hour_funding, freq="1h")
+
+    # the only upward jump of time_left_seconds is at 08:00
+    expected = pd.Series(
+        [False] * 8 + [True], index=hourly_ohlcv.index, name="is_funding_settlement",
+    )
+    pd.testing.assert_series_equal(result["is_funding_settlement"], expected, check_freq=False)
+
+
+def test_snapshot_rows_do_not_count_as_settlements(hourly_ohlcv):
+    idx = pd.to_datetime(["2024-01-01 00:00", "2024-01-01 01:00", "2024-01-01 02:00"])
+    funding = pd.DataFrame({
+        "mark_price": [100.0, 100.5, 101.0],
+        "funding": [0.0001, 0.0001, 0.0001],
+        "time_left_seconds": [10000, 6400, 2800],  # counting down, no reset
+    }, index=idx)
+
+    result = features.align_funding_to_ohlcv(hourly_ohlcv, funding, freq="1h")
+
+    assert not result["is_funding_settlement"].any()

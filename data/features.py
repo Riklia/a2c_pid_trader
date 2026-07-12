@@ -29,16 +29,16 @@ def align_funding_to_ohlcv(ohlcv: pd.DataFrame, funding: pd.DataFrame, freq: str
 
     Args:
         ohlcv: resampled OHLCV data with a DatetimeIndex.
-        funding: raw funding data with a DatetimeIndex, updated less frequently
-            than `freq` (e.g. every 8h).
+        funding: raw funding snapshots with a DatetimeIndex, containing
+            mark_price, funding, and time_left_seconds columns.
         freq: bar frequency to align onto, must match `ohlcv`'s index frequency.
     """
-    funding_resampled = funding[["mark_price", "funding"]].resample(freq).last()
-    is_settlement = funding_resampled["funding"].notna().reindex(ohlcv.index, fill_value=False)
+    resets = funding["time_left_seconds"].diff() > 0
+    settlement_bars = funding.index[resets].floor(freq).unique()
 
-    funding_filled = funding_resampled.ffill()
-    aligned = funding_filled.reindex(ohlcv.index, method="ffill")
-    aligned["is_funding_settlement"] = is_settlement
+    funding_resampled = funding[["mark_price", "funding"]].resample(freq).last().ffill()
+    aligned = funding_resampled.reindex(ohlcv.index, method="ffill")
+    aligned["is_funding_settlement"] = aligned.index.isin(settlement_bars)
 
     return ohlcv.join(aligned)
 

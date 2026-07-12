@@ -20,11 +20,20 @@ class TradingEnv:
             close, log_return, funding, and is_funding_settlement.
         fee_rate: taker fee charged on turnover as a fraction of equity.
         initial_equity: starting portfolio value.
+        funding_enabled: when False (default), funding settlements are ignored.
+            Disabled until the semantics of the funding column in the source
+            data are confirmed -- see notes in align_funding_to_ohlcv.
     """
 
     REQUIRED_COLUMNS = {"close", "log_return", "funding", "is_funding_settlement"}
 
-    def __init__(self, data: pd.DataFrame, fee_rate: float = 0.0004, initial_equity: float = 1.0):
+    def __init__(
+            self,
+            data: pd.DataFrame,
+            fee_rate: float = 0.0004,
+            initial_equity: float = 1.0,
+            funding_enabled: bool = False,
+    ):
         require_columns(data, self.REQUIRED_COLUMNS, "TradingEnv")
         if len(data) < 2:
             raise ValueError("data must have at least 2 rows to step through")
@@ -32,6 +41,7 @@ class TradingEnv:
         self.data = data
         self.fee_rate = fee_rate
         self.initial_equity = initial_equity
+        self.funding_enabled = funding_enabled
         self._step_idx = 0
         self.reset()
 
@@ -77,7 +87,7 @@ class TradingEnv:
 
         self.equity += self.position * next_row["log_return"] * self.equity
 
-        if next_row["is_funding_settlement"]:
+        if self.funding_enabled and next_row["is_funding_settlement"]:
             self.equity -= self.position * next_row["funding"] * self.equity
 
         reward = np.log(self.equity / equity_before) if equity_before > 0 else -np.inf

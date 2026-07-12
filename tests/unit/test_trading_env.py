@@ -61,24 +61,6 @@ def test_fee_charged_only_on_position_change():
     assert env.equity == pytest.approx(equity_after_first)
 
 
-def test_funding_charged_only_on_settlement_bar():
-    data = _make_data(
-        log_returns=[np.nan, 0.0, 0.0],
-        funding=[0.0, 0.01, 0.01],
-        is_settlement=[False, False, True],
-    )
-    env = TradingEnv(data, fee_rate=0.0)
-
-    # moves to row1: funding due but not a settlement bar
-    env.step(target_position=1.0)
-    equity_after_first = env.equity
-    assert equity_after_first == pytest.approx(1.0)
-
-    # moves to row2: settlement bar, funding charged
-    env.step(target_position=1.0)
-    assert env.equity == pytest.approx(equity_after_first * (1 - 0.01))
-
-
 def test_short_position_gains_on_price_drop():
     data = _make_data(log_returns=[np.nan, -0.5, 0.0])
     env = TradingEnv(data, fee_rate=0.0)
@@ -117,3 +99,31 @@ def test_reset_restores_initial_state():
     assert env.equity == 1.0
     assert env.position == 0.0
     assert env.equity_curve == [1.0]
+
+def test_funding_ignored_by_default():
+    data = _make_data(
+        log_returns=[np.nan, 0.0, 0.0],
+        funding=[0.0, 0.01, 0.01],
+        is_settlement=[False, True, True],
+    )
+    env = TradingEnv(data, fee_rate=0.0)
+
+    env.step(target_position=1.0)
+    env.step(target_position=1.0)
+
+    assert env.equity == pytest.approx(1.0)
+
+
+def test_funding_charged_when_enabled():
+    data = _make_data(
+        log_returns=[np.nan, 0.0, 0.0],
+        funding=[0.0, 0.01, 0.01],
+        is_settlement=[False, False, True],
+    )
+    env = TradingEnv(data, fee_rate=0.0, funding_enabled=True)
+
+    env.step(target_position=1.0)
+    equity_after_first = env.equity
+    env.step(target_position=1.0)
+
+    assert env.equity == pytest.approx(equity_after_first * (1 - 0.01))
