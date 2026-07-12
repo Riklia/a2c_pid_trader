@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+from data.validation import require_sorted_unique_datetime_index
+
 
 HOURS_PER_DAY = 24
 DAYS_PER_YEAR = 365
@@ -117,6 +119,9 @@ def build_feature_table(
     integral_mode: str = "rolling",
     integral_window: str = INTEGRAL_WINDOW,
 ) -> pd.DataFrame:
+    require_sorted_unique_datetime_index(ohlcv, "build_feature_table.ohlcv")
+    require_sorted_unique_datetime_index(funding, "build_feature_table.funding")
+
     resampled = resample_ohlcv(ohlcv, freq=freq)
     joined = align_funding_to_ohlcv(resampled, funding, freq=freq)
     returns = compute_log_returns(joined)

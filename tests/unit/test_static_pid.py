@@ -42,3 +42,9 @@ def test_all_three_terms_combine_linearly():
     # 1.0 * 0.4 + 0.5 * 0.6 + 0.25 * (-0.8) = 0.4 + 0.3 - 0.2 = 0.5
     expected = 0.5
     assert pid.act(_state(e_p=0.4, e_i=0.6, e_d=-0.8)) == pytest.approx(expected)
+
+def test_missing_state_field_raises_with_context():
+    pid = StaticPID(kp=1.0)
+    state = pd.Series({"e_p": 0.5, "e_i": 0.1})  # e_d missing
+    with pytest.raises(ValueError, match="StaticPID.act.*missing required fields"):
+        pid.act(state)

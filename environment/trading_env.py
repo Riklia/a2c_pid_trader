@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 
+from data.validation import require_columns
+
 
 class TradingEnv:
     """Bar-by-bar trading simulator over a precomputed feature table.
@@ -23,9 +25,7 @@ class TradingEnv:
     REQUIRED_COLUMNS = {"close", "log_return", "funding", "is_funding_settlement"}
 
     def __init__(self, data: pd.DataFrame, fee_rate: float = 0.0004, initial_equity: float = 1.0):
-        missing = self.REQUIRED_COLUMNS - set(data.columns)
-        if missing:
-            raise ValueError(f"data is missing required columns: {missing}")
+        require_columns(data, self.REQUIRED_COLUMNS, "TradingEnv")
         if len(data) < 2:
             raise ValueError("data must have at least 2 rows to step through")
 

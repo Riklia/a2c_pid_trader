@@ -18,7 +18,7 @@ def _make_data(log_returns, funding=None, is_settlement=None):
 
 def test_missing_columns_raises():
     df = pd.DataFrame({"close": [1.0, 2.0]}, index=pd.date_range("2024-01-01", periods=2, freq="1h"))
-    with pytest.raises(ValueError, match="missing required columns"):
+    with pytest.raises(ValueError, match="missing required fields"):
         TradingEnv(df)
 
 

@@ -3,6 +3,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from data.validation import require_columns
+
+
+REQUIRED_STATE_FIELDS = {"e_p", "e_i", "e_d"}
+
 
 @dataclass
 class StaticPID:
@@ -24,6 +29,7 @@ class StaticPID:
     position_bounds: tuple[float, float] = (-1.0, 1.0)
 
     def act(self, state: pd.Series) -> float:
+        require_columns(state, REQUIRED_STATE_FIELDS, "StaticPID.act")
         raw = self.kp * state["e_p"] + self.ki * state["e_i"] + self.kd * state["e_d"]
         low, high = self.position_bounds
         return float(np.clip(raw, low, high))
