@@ -42,11 +42,11 @@ def run_backtest(env: TradingEnv, controller: Controller) -> BacktestResult:
     actions: list[float] = []
 
     while not env.done:
-        state = env.data.iloc[env.step_idx]
+        state = env.data.iloc[env.current_step]
         action = controller.act(state)
         _, reward, _ = env.step(action)
 
-        timestamps.append(env.data.index[env.step_idx])
+        timestamps.append(env.data.index[env.current_step])
         rewards.append(reward)
         actions.append(action)
 

@@ -32,21 +32,25 @@ class TradingEnv:
         self.data = data
         self.fee_rate = fee_rate
         self.initial_equity = initial_equity
-        self.step_idx = 0
+        self._step_idx = 0
         self.reset()
 
     def reset(self) -> pd.Series:
         """Resets equity and position to initial state, returns the first row."""
-        self.step_idx = 0
+        self._step_idx = 0
         self.equity = self.initial_equity
         self.position = 0.0
         self.equity_curve = [self.equity]
         self.position_history = [self.position]
-        return self.data.iloc[self.step_idx]
+        return self.data.iloc[self._step_idx]
+
+    @property
+    def current_step(self) -> int:
+        return self._step_idx
 
     @property
     def done(self) -> bool:
-        return self.step_idx >= len(self.data) - 1
+        return self._step_idx >= len(self.data) - 1
 
     def step(self, target_position: float):
         """Applies a target position, charges fees on turnover, then earns
@@ -64,7 +68,7 @@ class TradingEnv:
             raise RuntimeError("step called after the episode already ended, call reset()")
 
         target_position = float(np.clip(target_position, -1.0, 1.0))
-        next_row = self.data.iloc[self.step_idx + 1]
+        next_row = self.data.iloc[self._step_idx + 1]
         equity_before = self.equity
 
         turnover = abs(target_position - self.position)
@@ -78,7 +82,7 @@ class TradingEnv:
 
         reward = np.log(self.equity / equity_before) if equity_before > 0 else -np.inf
 
-        self.step_idx += 1
+        self._step_idx += 1
         self.equity_curve.append(self.equity)
         self.position_history.append(self.position)
 

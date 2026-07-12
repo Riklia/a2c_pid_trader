@@ -175,16 +175,45 @@ def test_proportional_error_is_target_minus_realized(constant_error_vol):
     assert (result["e_p"] == 1.0).all()
 
 
-def test_rolling_integral_caps_at_window_sum(constant_error_vol):
+def test_rolling_integral_is_mean_of_error_over_window(constant_error_vol):
     result = features.compute_pid_errors(
         constant_error_vol, target_vol=1.5, integral_mode="rolling", integral_window="3h"
     )
-    assert list(result["e_i"]) == pytest.approx([1, 2, 3, 3, 3, 3])
+    assert list(result["e_i"]) == pytest.approx([1, 1, 1, 1, 1, 1])
 
 
-def test_expanding_integral_keeps_accumulating(constant_error_vol):
+def test_expanding_integral_is_running_mean_of_error(constant_error_vol):
     result = features.compute_pid_errors(constant_error_vol, target_vol=1.5, integral_mode="expanding")
-    assert list(result["e_i"]) == pytest.approx([1, 2, 3, 4, 5, 6])
+    assert list(result["e_i"]) == pytest.approx([1, 1, 1, 1, 1, 1])
+
+
+def test_rolling_integral_is_bounded_mean_of_error(constant_error_vol):
+    result = features.compute_pid_errors(
+        constant_error_vol, target_vol=1.5, integral_mode="rolling", integral_window="3h"
+    )
+    # constant e_p=1 -> rolling mean is always 1
+    assert list(result["e_i"]) == pytest.approx([1.0] * 6)
+
+
+def test_expanding_integral_is_running_mean_of_error(constant_error_vol):
+    result = features.compute_pid_errors(
+        constant_error_vol, target_vol=1.5, integral_mode="expanding"
+    )
+    assert list(result["e_i"]) == pytest.approx([1.0] * 6)
+
+
+def test_integral_stays_in_same_units_as_proportional_error():
+    """The integral term should have the same magnitude as e_p, regardless
+    of the window size, so that Kp, Ki, Kd can be tuned on a shared scale."""
+    idx = pd.date_range("2024-01-01", periods=1000, freq="1h")
+    vol = pd.Series([0.5] * 1000, index=idx)
+
+    short = features.compute_pid_errors(vol, target_vol=1.5, integral_mode="rolling", integral_window="10h")
+    long = features.compute_pid_errors(vol, target_vol=1.5, integral_mode="rolling", integral_window="500h")
+
+    # both should hover around e_p=1.0, not 10 vs 500
+    assert short["e_i"].iloc[-1] == pytest.approx(1.0)
+    assert long["e_i"].iloc[-1] == pytest.approx(1.0)
 
 
 def test_derivative_is_diff_of_proportional_error():

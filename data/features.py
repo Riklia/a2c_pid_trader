@@ -100,9 +100,9 @@ def compute_pid_errors(
     e_p = target_vol - realized_vol
 
     if integral_mode == "rolling":
-        e_i = e_p.rolling(integral_window).sum()
+        e_i = e_p.rolling(integral_window).mean()
     elif integral_mode == "expanding":
-        e_i = e_p.expanding().sum()
+        e_i = e_p.expanding().mean()
     else:
         raise ValueError(f"unknown integral_mode: {integral_mode}")
 

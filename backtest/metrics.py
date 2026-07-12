@@ -23,3 +23,19 @@ def max_drawdown(equity: pd.Series) -> float:
 def vol_tracking_rmse(realized_vol: pd.Series, target_vol: float) -> float:
     diff = realized_vol - target_vol
     return float(np.sqrt((diff ** 2).mean()))
+
+def portfolio_vol_tracking_rmse(
+    positions: pd.Series,
+    realized_vol: pd.Series,
+    target_vol: float,
+) -> float:
+    """Root mean squared deviation of |position| * realized_vol from target_vol.
+
+    This is the correct volatility-targeting control metric for the trading:
+    realized_vol is exogenous, so the controller can only influence the
+    exposure, and portfolio-level vol is |position| * realized_vol.
+    """
+    aligned = pd.concat([positions.rename("pos"), realized_vol.rename("vol")], axis=1).dropna()
+    portfolio_vol = aligned["pos"].abs() * aligned["vol"]
+    diff = portfolio_vol - target_vol
+    return float(np.sqrt((diff ** 2).mean()))
