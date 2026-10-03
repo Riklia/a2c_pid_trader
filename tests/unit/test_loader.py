@@ -1,5 +1,6 @@
 import pandas as pd
 from data import loader
+import pytest
 
 class FakeEngine:
     pass
@@ -40,3 +41,24 @@ def test_load_trades_defaults_to_quarter_is_null(monkeypatch):
     loader.load_trades(engine=FakeEngine(), symbol="BTCUSDT")
 
     assert "quarter IS NULL" in captured_query["sql"]
+
+def test_funding_is_converted_from_percent_to_fraction(monkeypatch):
+    fake_df = pd.DataFrame({
+        "ts": [1700000000],
+        "symbol": ["BTCUSDT"],
+        "mark_price": [60000.0],
+        "index_price": [60001.0],
+        "estimated_settle_price": [0.0],
+        "interest": [0.0],
+        "funding": [0.01],
+        "time_left_seconds": [14400],
+    })
+
+    def fake_read_sql(query, engine, params=None):
+        return fake_df.copy()
+
+    monkeypatch.setattr(loader.pd, "read_sql", fake_read_sql)
+    result = loader.load_funding(engine=FakeEngine(), symbol="BTCUSDT")
+
+    # 0.01% as a fraction is 0.0001
+    assert result["funding"].iloc[0] == pytest.approx(0.0001)

@@ -32,7 +32,7 @@ class TradingEnv:
             data: pd.DataFrame,
             fee_rate: float = 0.0004,
             initial_equity: float = 1.0,
-            funding_enabled: bool = False,
+            funding_enabled: bool = True,
     ):
         require_columns(data, self.REQUIRED_COLUMNS, "TradingEnv")
         if len(data) < 2:

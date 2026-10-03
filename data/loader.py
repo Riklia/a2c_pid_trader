@@ -54,4 +54,6 @@ def load_funding(engine, symbol: str = "BTCUSDT",
     """
     df = pd.read_sql(text(query), engine, params=params)
     df["ts"] = pd.to_datetime(df["ts"], unit="s")
+    # Funding is represented as percentages in the data source
+    df["funding"] = df["funding"] / 100.0
     return df.set_index("ts")

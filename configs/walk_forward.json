@@ -1,0 +1,49 @@
+{
+  "data": {
+    "symbol": "BTCUSDT",
+    "start_ts": 1567965420,
+    "end_ts": 1751328000,
+    "freq": "1h"
+  },
+  "features": {
+    "target_vol": 0.6,
+    "vol_window": "24h",
+    "integral_mode": "rolling",
+    "integral_window": "720h"
+  },
+  "env": {
+    "fee_rate": 0.0004,
+    "bars_per_year": 8760
+  },
+  "walk_forward": {
+    "train_size": 8760,
+    "test_size": 2160,
+    "step_size": 2160
+  },
+  "static_pid": {
+    "kp": 1.0,
+    "ki": 0.1,
+    "kd": 0.0
+  },
+  "a2c_pid": {
+    "static_kp": 2.0,
+    "static_ki": 0.2,
+    "static_kd": 0.0,
+    "pid_net_hidden": [128, 128],
+    "gain_bounds": 1.0
+  },
+  "training": {
+    "gamma": 0.99,
+    "lr": 0.005,
+    "w_error": 1.0,
+    "w_error_rate": 0.0,
+    "w_action": 0.0,
+    "w_prediction": 1.0,
+    "w_entropy": 0.001,
+    "w_critic": 1.0,
+    "eta": 0.001
+  },
+  "output": {
+    "results_csv": "results/walk_forward_results.csv"
+  }
+}
