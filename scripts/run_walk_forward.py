@@ -37,14 +37,18 @@ from training.train_loop import TrainConfig, train_one_pass
 from data.cache import load_from_cache, save_to_cache, cache_path_for
 
 
+FEATURES_VERSION = 2
+
+
 def load_config(path: Path) -> dict:
     with open(path) as f:
         return json.load(f)
 
 
 def build_dataset(cfg: dict) -> pd.DataFrame:
-    # TODO: add cache version to the metadata, so no need to clean up manually after code changes
     cache_params = {
+        # bump whenever feature logic changes without a parameter change
+        "features_version": FEATURES_VERSION,
         "symbol": cfg["data"]["symbol"],
         "start_ts": cfg["data"]["start_ts"],
         "end_ts": cfg["data"]["end_ts"],

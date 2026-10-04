@@ -310,3 +310,18 @@ def test_snapshot_rows_do_not_count_as_settlements(hourly_ohlcv):
     result = features.align_funding_to_ohlcv(hourly_ohlcv, funding, freq="1h")
 
     assert not result["is_funding_settlement"].any()
+
+
+def test_bars_before_first_funding_snapshot_are_kept_with_zero_funding(varying_hourly_ohlcv):
+    late_funding = pd.DataFrame(
+        {"mark_price": [100.0], "funding": [0.0003], "time_left_seconds": [3600]},
+        index=pd.to_datetime(["2024-01-01 06:00"]),
+    )
+    result = features.build_feature_table(
+        varying_hourly_ohlcv, late_funding, target_vol=0.1, freq="1h",
+        vol_window="3h", integral_window="3h",
+    )
+    early = result[result.index < pd.Timestamp("2024-01-01 06:00")]
+    assert len(early) > 0
+    assert (early["funding"] == 0.0).all()
+    assert result.loc["2024-01-01 06:00", "funding"] == pytest.approx(0.0003)

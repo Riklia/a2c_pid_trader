@@ -130,4 +130,8 @@ def build_feature_table(
 
     result = joined.assign(log_return=returns, realized_vol=realized_vol)
     result = result.join(errors)
-    return result.dropna()
+    # Price history often starts years before funding history. Bars before the
+    # first funding snapshot are kept with zero funding rather than dropped,
+    # otherwise the funding coverage silently truncates the whole dataset.
+    result["funding"] = result["funding"].fillna(0.0)
+    return result.dropna(subset=[c for c in result.columns if c != "mark_price"])

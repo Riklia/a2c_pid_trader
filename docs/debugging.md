@@ -52,11 +52,8 @@ parameters that affect it. If you change the logic *inside* a feature
 computation without changing any parameter the cache key sees, you will
 get stale data served back.
 
-Fix: clear `.cache/features/` manually, or bump a `features_version`
-constant that participates in the cache key.
-
-This is a known rough edge. A cleaner fix would be to version the module
-automatically, but we chose simplicity.
+Fix: bump `FEATURES_VERSION` in `scripts/run_walk_forward.py`. It is part
+of the cache key, so the next run rebuilds the table.
 
 ## Where everything from a run lives
 
