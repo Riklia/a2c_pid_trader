@@ -26,9 +26,6 @@
     "kd": 0.0
   },
   "a2c_pid": {
-    "static_kp": 2.0,
-    "static_ki": 0.2,
-    "static_kd": 0.0,
     "pid_net_hidden": [128, 128],
     "gain_bounds": 1.0
   },

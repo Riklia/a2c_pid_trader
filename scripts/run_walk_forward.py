@@ -104,13 +104,11 @@ def make_static_pid(cfg: dict) -> StaticPID:
 
 
 def make_a2c_pid(cfg: dict, seed: int) -> A2CPID:
+    """A2CPID on top of exactly the same static PID as the baseline, so any
+    difference between the two comes from the learned dynamic gains."""
     torch.manual_seed(seed)
     return A2CPID(
-        static_pid=StaticPID(
-            kp=cfg["a2c_pid"]["static_kp"],
-            ki=cfg["a2c_pid"]["static_ki"],
-            kd=cfg["a2c_pid"]["static_kd"],
-        ),
+        static_pid=make_static_pid(cfg),
         pid_net=PIDNet(
             hidden_sizes=tuple(cfg["a2c_pid"]["pid_net_hidden"]),
             gain_bounds=cfg["a2c_pid"]["gain_bounds"],
