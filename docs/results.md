@@ -76,6 +76,65 @@ known to be off in that condition.
 "Sizing" is |realized vol while invested − target|; flat periods are excluded
 because the momentum rule decides those, not the PID.
 
+## Hyperparameter search (BTC, correct design)
+
+A grid search over A2C-PID's training hyperparameters, with a time holdout
+so the reported numbers are not the ones used for selection:
+
+- **Tuning**: each grid point is trained and evaluated online on the first 5
+  BTC quarters only (2021-03 .. 2022-06, 1 seed), scored by its mean paired
+  Sharpe gain over static PID.
+- **Holdout**: only the winner then runs, with 3 seeds, on the 16 later
+  quarters (2022-06 .. 2026-09), unseen during selection.
+
+Grid (24 points): learning rate {0.003, 0.01, 0.03} × gain regularization
+`w_gain` {0.03, 0.3} × return term `w_return` {0, 1} × gain bounds
+{(0.5, 0.003, 20), 2× that}. Everything else as in the real-data runs.
+
+**Tuning quarters**, online A2C vs static PID, mean Sharpe gain:
+
+| `w_return` | points | mean Sharpe gain, range |
+|---|---|---|
+| 0 (vol tracking + costs only) | 12 | all positive, +0.001 .. +0.046 |
+| 1 (adds the return term) | 12 | all negative, −0.004 .. −0.226 |
+
+Top of the ranking (the differences between them are within noise: the
+winner won 3 of 5 quarters):
+
+| lr | `w_gain` | gain bounds | mean Sharpe gain | quarters won |
+|---|---|---|---|---|
+| **0.01** | **0.3** | **2×** | **+0.046** | 3/5 |
+| 0.03 | 0.3 | 2× | +0.036 | 2/5 |
+| 0.003 | 0.03 | 1× | +0.036 | 4/5 |
+| 0.03 | 0.03 | 1× | +0.034 | 2/5 |
+| 0.01 | 0.03 | 2× | +0.031 | 3/5 |
+| 0.01 | 0.1 | 1× (current default, not in the grid; seed 0 of the BTC run) | +0.017 | 3/5 |
+
+**Holdout quarters** (16), online A2C vs static PID:
+
+| | default hyperparameters | tuned (winner) |
+|---|---|---|
+| Sharpe | 10/16 won, +0.010 | 11/16 won, +0.021 (p = 0.11, CI [−0.013, +0.059]) |
+| return per quarter | +0.13 pp | +0.25 pp (CI includes 0) |
+| max drawdown | ≈0 | +0.06 pp (CI includes 0) |
+| sizing error while invested | slightly worse (CI excludes 0) | ≈0 (CI includes 0) |
+
+Frozen A2C with the tuned hyperparameters: Sharpe −0.005 vs static PID.
+
+Takeaways:
+
+- **Train the network on vol tracking, not on returns.** Adding the
+  mean-variance return term made A2C worse than static PID in all 12 grid
+  points that had it. Hourly returns are too noisy to learn from in a year.
+- Tuning roughly doubles A2C's edge on unseen quarters and removes its small
+  sizing penalty, but in this correct-design setting the gain stays within
+  noise, as expected; the significant results remain the design-error
+  conditions above.
+- Online adaptation is still what matters: tuned but frozen, A2C does not
+  beat static PID.
+- The defaults in `configs/walk_forward.json` were left unchanged so the
+  tables above stay reproducible.
+
 ## Caveats
 
 - Effects are modest in size (Sharpe +0.03 per quarter where significant).
@@ -102,6 +161,9 @@ python scripts/run_walk_forward.py configs/walk_forward.json --workers 20 --tag 
 
 # paired statistics for any set of runs
 python scripts/compare_runs.py results/run_*_A_*
+
+# hyperparameter search with time holdout (~50 min on 20 cores), grid in configs/grid_search.json
+python scripts/grid_search.py configs/grid_search.json --workers 20
 ```
 
 The real-data conditions above used the traded symbol's own features
