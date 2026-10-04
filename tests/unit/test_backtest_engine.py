@@ -71,3 +71,25 @@ def test_positive_error_makes_controller_go_long():
     # equity_after_step0 = 1.0 * (1 + 0.5 * (e^0.1 - 1))
     assert result.equity.iloc[1] == pytest.approx(1.0 + 0.5 * np.expm1(0.1))
     assert result.actions.iloc[0] == pytest.approx(0.5)
+
+class _RecordingController:
+    """Controller that remembers every observation the backtest feeds it."""
+
+    def __init__(self):
+        self.observations = []
+
+    def act(self, state):
+        return 0.5
+
+    def record_observation(self, position, realized_vol):
+        self.observations.append((position, realized_vol))
+
+
+def test_backtest_feeds_observations_to_controllers_that_record_them():
+    data = _make_data([np.nan, 0.01, -0.02, 0.03]).assign(realized_vol=[0.1, 0.2, 0.3, 0.4])
+    controller = _RecordingController()
+
+    run_backtest(TradingEnv(data, fee_rate=0.0), controller)
+
+    # one observation per step: the executed position and the next bar's realized vol
+    assert controller.observations == [(0.5, 0.2), (0.5, 0.3), (0.5, 0.4)]
