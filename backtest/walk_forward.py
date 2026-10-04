@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Callable
 
 import pandas as pd
 
@@ -93,13 +94,16 @@ def evaluate_on_test(
     max_position: float = 1.0,
     vol_window: int = 168,
     seed: int | None = None,
+    runner: Callable[[TradingEnv, Controller], BacktestResult] = run_backtest,
 ) -> tuple[FoldMetrics, BacktestResult]:
     """Runs `controller` on fold.test_data, returns metrics and the raw result.
 
     vol_window is the number of bars per rolling estimate in vol_rmse.
+    runner steps the env with the controller; the default is a plain backtest,
+    training.online.run_online keeps the controller learning while it trades.
     """
     env = TradingEnv(fold.test_data, fee_rate=fee_rate, max_position=max_position)
-    result = run_backtest(env, controller)
+    result = runner(env, controller)
     beta, alpha = beta_alpha(result.rewards, fold.test_data["log_return"], bars_per_year)
 
     metrics = FoldMetrics(

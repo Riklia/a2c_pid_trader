@@ -8,7 +8,10 @@ Controllers compared on every fold:
     buy_hold    constant long, the no-skill benchmark
     vol_target  plain vol targeting, i.e. the control law with kp=1, ki=kd=0
     static_pid  the control law with the configured static gains
-    a2c_pid     static_pid's gains plus PIDNet's dynamic gains, one run per seed
+    a2c_pid     static_pid's gains plus PIDNet's dynamic gains, one run per seed,
+                trained on the train window and frozen during the test window
+    a2c_online  the same trained controller, but it keeps learning online during
+                the test window (a2c_pid.evaluate_online), as in the paper
 
 Run from repo root:
     python scripts/run_walk_forward.py configs/walk_forward.json --workers 20
@@ -47,6 +50,7 @@ from data import loader, features, model_features
 from data.cache import load_from_cache, save_to_cache, cache_path_for
 from environment.trading_env import TradingEnv
 from models.pid_net import PIDNet, PIDNetInputBuilder
+from training.online import run_online
 from training.train_loop import TrainConfig, train_one_pass
 
 
@@ -277,8 +281,8 @@ def run_fold(fold_id: int, traces_dir: Path) -> tuple[list[FoldMetrics], list[st
     lines = [f"fold {fold.fold_id}: train {fold.train_start.date()}..{fold.train_end.date()}, "
              f"test {fold.test_start.date()}..{fold.test_end.date()}"]
 
-    def evaluate(controller: Controller, name: str, seed: int | None = None) -> None:
-        m, result = evaluate_on_test(fold, controller, name, seed=seed, **eval_kwargs)
+    def evaluate(controller: Controller, name: str, seed: int | None = None, **kwargs) -> None:
+        m, result = evaluate_on_test(fold, controller, name, seed=seed, **eval_kwargs, **kwargs)
         metrics.append(m)
         label = name if seed is None else f"{name}[s{seed}]"
         lines.append(f"  {label:14s} {format_metrics(m)}")
@@ -294,7 +298,13 @@ def run_fold(fold_id: int, traces_dir: Path) -> tuple[list[FoldMetrics], list[st
             fold.train_data, fee_rate=cfg["env"]["fee_rate"], max_position=cfg["env"]["max_position"],
         )
         train_one_pass(train_env, a2c_ctrl, make_train_config(cfg))
+        # copy first: the frozen backtest advances the controller's normalization state
+        online_ctrl = copy.deepcopy(a2c_ctrl) if cfg["a2c_pid"]["evaluate_online"] else None
         evaluate(a2c_ctrl, "a2c_pid", seed=seed)
+        if online_ctrl is not None:
+            train_cfg = make_train_config(cfg)
+            evaluate(online_ctrl, "a2c_online", seed=seed,
+                     runner=lambda env, ctrl: run_online(env, ctrl, train_cfg))
 
     return metrics, lines
 

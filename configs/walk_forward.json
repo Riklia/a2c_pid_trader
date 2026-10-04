@@ -41,6 +41,7 @@
     "pid_net_hidden": [32, 32],
     "gain_bounds": [0.5, 0.003, 20.0],
     "seeds": [0, 1, 2],
+    "evaluate_online": true,
     "cross_asset_missing": "fill",
     "features": [
       {"column": "realized_vol", "norm": "zscore"},
