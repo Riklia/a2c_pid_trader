@@ -42,12 +42,14 @@ $$
 \text{position} = \text{direction} \times \min\!\left(e^{K_p e + K_i e_\text{int} + K_d e_d},\ \text{max\_position}\right)
 $$
 
-- **Direction** is +1 by default (long only). The trend modes read a
-  signal column (`controller.trend_column`, e.g. a momentum column) and go
-  long/flat or long/short, re-deciding once every `direction_hold` bars to
-  avoid whipsaw fees. Vol targeting manages risk, it does not predict
-  direction, so profit has to come from here. Without a direction signal
-  every controller is mostly BTC beta: it wins exactly when BTC rises.
+- **Direction** comes from 30-day time-series momentum by default
+  (`trend_long_flat` on `mom_720h`): long when the last 30 days' log
+  return is positive, flat otherwise, re-decided once a day
+  (`direction_hold`) to avoid whipsaw fees. Other modes: long only, a
+  30-day moving-average filter (`trend`), long/short. Vol targeting
+  manages risk, it does not predict direction, so profit has to come from
+  here. Without a direction signal every controller is mostly BTC beta: it
+  wins exactly when BTC rises.
 - **Size** is a PID in log space on $e = \log(\text{target}/\hat\sigma)$.
   With $K_p = 1$, $K_i = K_d = 0$ it is exactly textbook vol targeting,
   $\text{target}/\hat\sigma$. The integral term accumulates

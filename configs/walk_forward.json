@@ -23,7 +23,7 @@
   },
   "controller": {
     "target_vol": 0.35,
-    "direction": "long_only",
+    "direction": "trend_long_flat",
     "trend_column": "mom_720h",
     "direction_hold": 24,
     "forecast_vol_window": "168h",
