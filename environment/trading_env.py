@@ -20,9 +20,7 @@ class TradingEnv:
             close, log_return, funding, and is_funding_settlement.
         fee_rate: taker fee charged on turnover as a fraction of equity.
         initial_equity: starting portfolio value.
-        funding_enabled: when False (default), funding settlements are ignored.
-            Disabled until the semantics of the funding column in the source
-            data are confirmed -- see notes in align_funding_to_ohlcv.
+        funding_enabled: when False, funding settlements are ignored.
     """
 
     REQUIRED_COLUMNS = {"close", "log_return", "funding", "is_funding_settlement"}
@@ -85,7 +83,9 @@ class TradingEnv:
         self.equity -= turnover * self.fee_rate * self.equity
         self.position = target_position
 
-        self.equity += self.position * next_row["log_return"] * self.equity
+        # log_return must be converted back to a simple return before it can
+        # scale equity, otherwise longs silently lose ~sigma^2/2 per bar
+        self.equity += self.position * np.expm1(next_row["log_return"]) * self.equity
 
         if self.funding_enabled and next_row["is_funding_settlement"]:
             self.equity -= self.position * next_row["funding"] * self.equity

@@ -67,7 +67,7 @@ def test_positive_error_makes_controller_go_long():
 
     result = run_backtest(env, controller)
 
-    # first action taken at step 0 based on e_p=0.5 -> position 0.5, applied against bar1's return 0.1
-    # equity_after_step0 = 1.0 * (1 + 0.5 * 0.1) = 1.05
-    assert result.equity.iloc[1] == pytest.approx(1.05)
+    # first action taken at step 0 based on e_p=0.5 -> position 0.5, applied against bar1's return
+    # equity_after_step0 = 1.0 * (1 + 0.5 * (e^0.1 - 1))
+    assert result.equity.iloc[1] == pytest.approx(1.0 + 0.5 * np.expm1(0.1))
     assert result.actions.iloc[0] == pytest.approx(0.5)

@@ -28,9 +28,9 @@ def test_position_earns_next_bar_return_not_its_own():
 
     _, reward, _ = env.step(target_position=1.0)
 
-    # position=1, next-bar log_return=1.0 -> equity += 1.0 * equity -> equity=2.0
-    assert env.equity == pytest.approx(2.0)
-    assert reward == pytest.approx(np.log(2.0))
+    # position=1, next-bar log_return=1.0 -> simple return e - 1 -> equity=e
+    assert env.equity == pytest.approx(np.e)
+    assert reward == pytest.approx(1.0)
 
 
 def test_flat_position_is_unaffected_by_price_moves():
@@ -67,8 +67,8 @@ def test_short_position_gains_on_price_drop():
 
     env.step(target_position=-1.0)
 
-    # position=-1, log_return=-0.5 -> equity += (-1)*(-0.5)*equity -> equity=1.5
-    assert env.equity == pytest.approx(1.5)
+    # position=-1, log_return=-0.5 -> equity += (-1) * (e^-0.5 - 1) * equity
+    assert env.equity == pytest.approx(2.0 - np.exp(-0.5))
 
 
 def test_target_position_is_clipped_to_valid_range():
@@ -77,6 +77,17 @@ def test_target_position_is_clipped_to_valid_range():
 
     env.step(target_position=5.0)
     assert env.position == 1.0
+
+
+def test_full_long_position_tracks_price_exactly():
+    """Compounding simple returns at position 1 must reproduce the price path."""
+    prices = np.array([100.0, 110.0, 99.0, 120.0])
+    log_returns = np.log(prices / np.roll(prices, 1))
+    log_returns[0] = np.nan
+    env = TradingEnv(_make_data(log_returns=list(log_returns)), fee_rate=0.0)
+    while not env.done:
+        env.step(target_position=1.0)
+    assert env.equity == pytest.approx(prices[-1] / prices[0])
 
 
 def test_step_after_done_raises():
