@@ -97,7 +97,7 @@ def train_one_pass(
         next_state = env.data.iloc[env.current_step]
         next_realized_vol = float(next_state["realized_vol"])
 
-        controller.record_observation(position=action, realized_vol=next_realized_vol)
+        controller.record_observation(position=action)
 
         reward = compute_reward(
             realized_vol=next_realized_vol, target_vol=target_vol,

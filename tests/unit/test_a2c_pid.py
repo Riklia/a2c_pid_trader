@@ -6,7 +6,8 @@ from control.static_pid import StaticPID
 from control.controller_base import Controller
 from models.actor import Actor
 from models.critic import Critic
-from models.pid_net import PIDNet
+from data.model_features import FeatureNormalizer, FeatureSpec
+from models.pid_net import PIDNet, PIDNetInputBuilder
 
 
 def _state(e_p=0.1, e_i=0.5, e_d=-0.05, realized_vol=0.5):
@@ -65,13 +66,49 @@ def test_record_observation_advances_history_seen_by_next_act():
     state = _state(e_p=0.2, e_i=0.0, e_d=0.0, realized_vol=0.7)
 
     ctrl.act(state)
-    ctrl.record_observation(position=0.3, realized_vol=0.65)
+    ctrl.record_observation(position=0.3)
     ctrl.act(state)
 
     pid_input, _ = ctrl.build_training_inputs()
-    # after one record: u(k-1)=0.3, s(k-1)=0.65
-    assert pid_input[0].item() == pytest.approx(0.3)
-    assert pid_input[2].item() == pytest.approx(0.65)
+    assert pid_input[0].item() == pytest.approx(0.3)  # u(k-1)
+
+
+def test_network_sees_exactly_the_configured_features():
+    specs = [FeatureSpec("e_p", norm="none"), FeatureSpec("realized_vol", symbol="ETHUSDT", norm="none")]
+    normalizer = FeatureNormalizer(specs)
+    ctrl = A2CPID(
+        static_pid=StaticPID(kp=1.0),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(len(normalizer))),
+        actor=Actor(), critic=Critic(), normalizer=normalizer,
+    )
+    state = _state(e_p=0.2).copy()
+    state["ETHUSDT:realized_vol"] = 0.9
+
+    ctrl.act(state)
+
+    pid_input, _ = ctrl.build_training_inputs()
+    assert pid_input[2:].tolist() == pytest.approx([0.2, 0.9])
+
+
+def test_missing_cross_asset_feature_raises():
+    normalizer = FeatureNormalizer([FeatureSpec("realized_vol", symbol="ETHUSDT")])
+    ctrl = A2CPID(
+        static_pid=StaticPID(kp=1.0),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(1)),
+        actor=Actor(), critic=Critic(), normalizer=normalizer,
+    )
+    with pytest.raises(ValueError, match="ETHUSDT:realized_vol"):
+        ctrl.act(_state())
+
+
+def test_network_input_size_must_match_feature_count():
+    with pytest.raises(ValueError, match="input_size=4"):
+        A2CPID(
+            static_pid=StaticPID(kp=1.0),
+            pid_net=PIDNet(input_size=7),
+            actor=Actor(), critic=Critic(),
+            normalizer=FeatureNormalizer([FeatureSpec("e_p"), FeatureSpec("e_i")]),
+        )
 
 
 def test_build_training_inputs_before_any_act_raises():

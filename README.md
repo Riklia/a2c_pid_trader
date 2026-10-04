@@ -21,6 +21,7 @@ pip install -r requirements.txt
 cp .env.example .env    # fill in DEV_DB_DSN
 python scripts/run_walk_forward.py configs/walk_forward.json
 python scripts/plot_run.py results/run_<timestamp>
+python scripts/describe_features.py configs/walk_forward.json   # what the model sees
 ```
 
 For stepping through the environment manually:
@@ -33,4 +34,5 @@ streamlit run tools/env_viewer/app.py
 
 - [docs/overview.md](docs/overview.md): what the system does and how it's wired together
 - [docs/control_formulation.md](docs/control_formulation.md): the control-theory framing with the math
+- [docs/features.md](docs/features.md): which inputs the model uses, how they are normalized, how to add or remove one
 - [docs/debugging.md](docs/debugging.md): tools and workflows when something looks wrong

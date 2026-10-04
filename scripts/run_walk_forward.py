@@ -8,6 +8,7 @@ Run from repo root:
     python scripts/run_walk_forward.py configs/walk_forward.json
 """
 import argparse
+import copy
 import json
 import os
 import sys
@@ -29,11 +30,11 @@ from backtest.engine import BacktestResult
 from control.a2c_pid import A2CPID
 from control.baselines import BuyAndHold
 from control.static_pid import StaticPID
-from data import loader, features
+from data import loader, features, model_features
 from environment.trading_env import TradingEnv
 from models.actor import Actor
 from models.critic import Critic
-from models.pid_net import PIDNet
+from models.pid_net import PIDNet, PIDNetInputBuilder
 from training.train_loop import TrainConfig, train_one_pass
 from data.cache import load_from_cache, save_to_cache, cache_path_for
 
@@ -47,6 +48,36 @@ def load_config(path: Path) -> dict:
 
 
 def build_dataset(cfg: dict) -> pd.DataFrame:
+    """Feature table of the traded symbol, plus the cross-asset model features
+    (`SYMBOL:column`) the config asks for, aligned bar by bar."""
+    table = load_feature_table(cfg)
+    specs = model_feature_specs(cfg)
+    others = {
+        symbol: load_feature_table(config_for_symbol(cfg, symbol))
+        for symbol in model_features.other_symbols(specs)
+    }
+    return model_features.attach_cross_asset_features(
+        table, others, specs, missing=cfg["a2c_pid"]["cross_asset_missing"],
+    )
+
+
+def config_for_symbol(cfg: dict, symbol: str) -> dict:
+    """Same config, pointed at another symbol."""
+    out = copy.deepcopy(cfg)
+    out["data"]["symbol"] = symbol
+    return out
+
+
+def model_feature_specs(cfg: dict) -> list[model_features.FeatureSpec]:
+    """The configured model features, plus SYMBOL:available flags under the "fill" policy."""
+    specs = model_features.parse_feature_specs(cfg["a2c_pid"]["features"])
+    if cfg["a2c_pid"]["cross_asset_missing"] == "fill":
+        specs = model_features.with_availability_flags(specs)
+    return specs
+
+
+def load_feature_table(cfg: dict) -> pd.DataFrame:
+    """Per-symbol feature table, built from Postgres once and cached."""
     cache_params = {
         # bump whenever feature logic changes without a parameter change
         "features_version": FEATURES_VERSION,
@@ -62,7 +93,7 @@ def build_dataset(cfg: dict) -> pd.DataFrame:
 
     cached = load_from_cache(cache_params)
     if cached is not None:
-        print(f"loaded {len(cached)} rows from cache")
+        print(f"loaded {cfg['data']['symbol']}: {len(cached)} rows from cache")
         return cached
 
     dsn = os.environ.get("DEV_DB_DSN")
@@ -108,12 +139,15 @@ def make_a2c_pid(cfg: dict, seed: int) -> A2CPID:
     """A2CPID on top of exactly the same static PID as the baseline, so any
     difference between the two comes from the learned dynamic gains."""
     torch.manual_seed(seed)
+    normalizer = model_features.FeatureNormalizer(model_feature_specs(cfg))
     return A2CPID(
         static_pid=make_static_pid(cfg),
         pid_net=PIDNet(
+            input_size=PIDNetInputBuilder.input_size(len(normalizer)),
             hidden_sizes=tuple(cfg["a2c_pid"]["pid_net_hidden"]),
             gain_bounds=cfg["a2c_pid"]["gain_bounds"],
         ),
+        normalizer=normalizer,
         actor=Actor(),
         critic=Critic(),
     )
@@ -146,6 +180,9 @@ def run(cfg_path: Path) -> None:
     run_dir = make_run_dir()
 
     print(f"run dir: {run_dir}")
+    print("\nA2C-PID model features (edit a2c_pid.features in the config, see docs/features.md):")
+    print(model_features.describe_features(model_feature_specs(cfg), cfg['data']['symbol']).to_string(index=False))
+    print()
 
     data = build_dataset(cfg)
 

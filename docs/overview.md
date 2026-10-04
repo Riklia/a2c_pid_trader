@@ -36,9 +36,10 @@ A single walk-forward experiment does this:
 
 At each bar, A2C-PID does:
 
-- Read the current state (realized vol, PID errors, funding, position
-  history).
-- Feed a normalized version into a small MLP that outputs three dynamic
+- Read the current state: its own last two positions plus the model
+  features listed in `a2c_pid.features`, which can include other symbols'
+  data (see [features.md](features.md)).
+- Feed the normalized features into a small MLP that outputs three dynamic
   gain adjustments.
 - Add those to the static gains, compute $u = Kp \cdot e_p + Ki \cdot e_i + Kd \cdot e_d$,
   clip to [-1, 1]. This is the position for the next bar.

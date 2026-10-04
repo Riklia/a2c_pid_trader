@@ -81,15 +81,15 @@ class _RecordingController:
     def act(self, state):
         return 0.5
 
-    def record_observation(self, position, realized_vol):
-        self.observations.append((position, realized_vol))
+    def record_observation(self, position):
+        self.observations.append(position)
 
 
 def test_backtest_feeds_observations_to_controllers_that_record_them():
-    data = _make_data([np.nan, 0.01, -0.02, 0.03]).assign(realized_vol=[0.1, 0.2, 0.3, 0.4])
+    data = _make_data([np.nan, 0.01, -0.02, 0.03])
     controller = _RecordingController()
 
     run_backtest(TradingEnv(data, fee_rate=0.0), controller)
 
-    # one observation per step: the executed position and the next bar's realized vol
-    assert controller.observations == [(0.5, 0.2), (0.5, 0.3), (0.5, 0.4)]
+    # one observation per step: the executed position
+    assert controller.observations == [0.5, 0.5, 0.5]

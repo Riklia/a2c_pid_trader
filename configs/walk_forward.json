@@ -2,7 +2,7 @@
   "data": {
     "symbol": "BTCUSDT",
     "start_ts": 1567965420,
-    "end_ts": 1751328000,
+    "end_ts": 1788220800,
     "freq": "1h"
   },
   "features": {
@@ -27,7 +27,23 @@
   },
   "a2c_pid": {
     "pid_net_hidden": [128, 128],
-    "gain_bounds": 1.0
+    "gain_bounds": 1.0,
+    "cross_asset_missing": "fill",
+    "features": [
+      {"column": "realized_vol", "norm": "zscore"},
+      {"column": "e_i", "norm": "zscore"},
+      {"column": "e_d", "norm": "zscore"},
+      {"column": "log_return", "norm": "zscore"},
+      {"column": "funding", "norm": "zscore"},
+      {"column": "realized_vol", "symbol": "ETHUSDT", "norm": "zscore"},
+      {"column": "log_return", "symbol": "ETHUSDT", "norm": "zscore"},
+      {"column": "realized_vol", "symbol": "XRPUSD", "norm": "zscore"},
+      {"column": "log_return", "symbol": "XRPUSD", "norm": "zscore"},
+      {"column": "realized_vol", "symbol": "ADAUSD", "norm": "zscore"},
+      {"column": "log_return", "symbol": "ADAUSD", "norm": "zscore"},
+      {"column": "realized_vol", "symbol": "BNBUSD", "norm": "zscore"},
+      {"column": "log_return", "symbol": "BNBUSD", "norm": "zscore"}
+    ]
   },
   "training": {
     "gamma": 0.99,
