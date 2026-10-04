@@ -29,15 +29,22 @@ def main(cfg_path: Path) -> None:
 
     print(f"traded symbol: {cfg['data']['symbol']}\n")
 
-    print("PID law (static_pid and the static part of a2c_pid), raw values, not configurable:")
-    for column in ["e_p", "e_i", "e_d"]:
-        print(f"  {column:4s} {model_features.COLUMN_DESCRIPTIONS[column]}")
+    c = cfg["controller"]
+    print("Control law (static_pid and the static part of a2c_pid), not configurable here:")
+    print("  position = direction * min(exp(kp*e + ki*e_int + kd*e_d), env.max_position)")
+    print("  e      log(controller.target_vol / vol_forecast)")
+    print("  e_int  running sum of log(target_vol / realized portfolio vol), anti-windup clamped")
+    print("  e_d    one-bar change of e")
+    direction = c["direction"] + (f" on {c['trend_column']}, re-read every {c['direction_hold']} bars"
+                                  if c["direction"] != "long_only" else "")
+    print(f"  direction: {direction}")
 
     n_inputs = PIDNetInputBuilder.input_size(len(specs))
     n_flags = sum(spec.column == model_features.AVAILABLE for spec in specs)
-    print(f"\nPIDNet input ({n_inputs} values = 2 past positions + {len(specs) - n_flags} features from "
-          f"a2c_pid.features + {n_flags} automatic availability flags):")
+    print(f"\nPIDNet input ({n_inputs} values = 2 past positions + 3 law errors + "
+          f"{len(specs) - n_flags} features from a2c_pid.features + {n_flags} automatic availability flags):")
     print("  u(k-1), u(k-2): the controller's own last two positions, raw")
+    print("  e, e_int / integral_limit, e_d: the law's errors above, dimensionless")
     print(model_features.describe_features(specs, cfg['data']['symbol']).to_string(index=False))
     print("\n  normalizations:")
     for norm in dict.fromkeys(spec.norm for spec in specs):
@@ -48,7 +55,6 @@ def main(cfg_path: Path) -> None:
         print(f"\ncross-asset symbols: {', '.join(others)}")
         print(f"bars where one of them has no value ({missing!r}): {model_features.MISSING_POLICIES[missing]}")
 
-    print("\nactor / critic: [position, realized_vol, realized_vol], raw (training only)")
 
 
 if __name__ == "__main__":

@@ -12,3 +12,9 @@ def test_buy_and_hold_is_constant():
 
 def test_buy_and_hold_satisfies_controller_protocol():
     assert isinstance(BuyAndHold(), Controller)
+
+
+def test_buy_and_hold_reset_is_a_no_op():
+    bh = BuyAndHold(position=0.3)
+    bh.reset()
+    assert bh.act(pd.Series({"log_return": 0.0})) == 0.3

@@ -3,12 +3,14 @@ import os
 import numpy as np
 import pytest
 
+import torch
+
 from control.a2c_pid import A2CPID
+from control import tuning
 from control.static_pid import StaticPID
+from control.vol_target import VolTargetLaw
 from data import loader, features
 from environment.trading_env import TradingEnv
-from models.actor import Actor
-from models.critic import Critic
 from models.pid_net import PIDNet
 from training.train_loop import TrainConfig, train_one_pass
 
@@ -20,6 +22,8 @@ TARGET_VOL = 0.6
 FREQ = "1h"
 VOL_WINDOW = "24h"
 INTEGRAL_WINDOW = "720h"
+FORECAST_VOL_WINDOW = "168h"
+CONTROLLER_TARGET_VOL = 0.35
 
 # ~500 hourly bars starting from a known-populated window in the DB.
 # Timestamp corresponds to 2023-11-14 22:13:20 UTC, safely inside the
@@ -44,26 +48,26 @@ def real_feature_table(engine):
     if trades.empty:
         pytest.skip(f"no trade data returned for the chosen window [{START_TS}, {END_TS}]")
 
-    return features.build_feature_table(
+    table = features.build_feature_table(
         trades, funding,
         target_vol=TARGET_VOL, freq=FREQ,
         vol_window=VOL_WINDOW, integral_mode="rolling", integral_window=INTEGRAL_WINDOW,
     )
+    return features.add_sizing_features(table, freq=FREQ, forecast_vol_window=FORECAST_VOL_WINDOW)
 
 
 def _fresh_controller() -> A2CPID:
+    law = VolTargetLaw(target_vol=CONTROLLER_TARGET_VOL, port_vol_window=48)
     return A2CPID(
-        static_pid=StaticPID(kp=1.0),
-        pid_net=PIDNet(),
-        actor=Actor(),
-        critic=Critic(),
+        static_pid=StaticPID(law=law, **tuning.derived_gains(48)),
+        pid_net=PIDNet(gain_bounds=(0.5, 0.01, 20.0)),
     )
 
 
 def test_feature_table_is_nonempty_and_shaped_correctly(real_feature_table):
     assert len(real_feature_table) > 50, "feature table too short to be useful"
     for col in ["close", "log_return", "funding", "is_funding_settlement",
-                "realized_vol", "e_p", "e_i", "e_d"]:
+                "realized_vol", "vol_forecast"]:
         assert col in real_feature_table.columns
     assert real_feature_table.isna().sum().sum() == 0
 
@@ -72,7 +76,7 @@ def test_train_loop_completes_full_pass(real_feature_table):
     env = TradingEnv(real_feature_table, fee_rate=0.0004)
     ctrl = _fresh_controller()
 
-    reports = train_one_pass(env, ctrl, TrainConfig(), target_vol=TARGET_VOL)
+    reports = train_one_pass(env, ctrl, TrainConfig())
 
     assert env.done
     assert len(reports) == len(real_feature_table) - 1
@@ -82,57 +86,42 @@ def test_all_reports_carry_finite_numbers(real_feature_table):
     env = TradingEnv(real_feature_table, fee_rate=0.0004)
     ctrl = _fresh_controller()
 
-    reports = train_one_pass(env, ctrl, TrainConfig(), target_vol=TARGET_VOL)
+    reports = train_one_pass(env, ctrl, TrainConfig())
 
     for r in reports:
-        assert np.isfinite(r.reward), f"non-finite reward at step {r.step}"
-        assert np.isfinite(r.td), f"non-finite TD error at step {r.step}"
-        assert np.isfinite(r.actor_loss), f"non-finite actor loss at step {r.step}"
-        assert np.isfinite(r.critic_loss), f"non-finite critic loss at step {r.step}"
-        assert np.isfinite(r.predicted_vol), f"non-finite predicted_vol at step {r.step}"
-        assert -1.0 <= r.action <= 1.0, f"action out of bounds at step {r.step}: {r.action}"
+        assert np.isfinite(r.utility), f"non-finite utility at step {r.step}"
+        assert np.isfinite(r.loss), f"non-finite loss at step {r.step}"
+        assert np.isfinite([r.kp, r.ki, r.kd]).all(), f"non-finite gains at step {r.step}"
+        assert 0.0 <= r.action <= 1.0, f"action out of bounds at step {r.step}: {r.action}"
 
 
 def test_all_reports_reference_valid_bar_timestamps(real_feature_table):
     env = TradingEnv(real_feature_table, fee_rate=0.0004)
     ctrl = _fresh_controller()
 
-    reports = train_one_pass(env, ctrl, TrainConfig(), target_vol=TARGET_VOL)
+    reports = train_one_pass(env, ctrl, TrainConfig())
 
     valid_index = set(real_feature_table.index)
     for r in reports:
         assert r.ts in valid_index, f"step {r.step} references timestamp {r.ts} not in feature table"
 
 
-def test_networks_actually_updated_after_full_pass(real_feature_table):
+def test_pid_net_actually_updated_after_full_pass(real_feature_table):
     env = TradingEnv(real_feature_table, fee_rate=0.0004)
     ctrl = _fresh_controller()
+    before = [p.detach().clone() for p in ctrl.pid_net.parameters()]
 
-    def snapshot(module):
-        return [p.detach().clone() for p in module.parameters()]
+    train_one_pass(env, ctrl, TrainConfig(lr=1e-2))
 
-    before = {
-        "actor": snapshot(ctrl.actor),
-        "critic": snapshot(ctrl.critic),
-        "pid_net": snapshot(ctrl.pid_net),
-    }
-
-    train_one_pass(env, ctrl, TrainConfig(lr=1e-3), target_vol=TARGET_VOL)
-
-    import torch
-    for name, module in [("actor", ctrl.actor), ("critic", ctrl.critic), ("pid_net", ctrl.pid_net)]:
-        changed = any(
-            not torch.allclose(before_p, after_p)
-            for before_p, after_p in zip(before[name], module.parameters())
-        )
-        assert changed, f"{name} weights did not change after training"
+    changed = any(not torch.allclose(b, a) for b, a in zip(before, ctrl.pid_net.parameters()))
+    assert changed, "pid_net weights did not change after training"
 
 
 def test_train_loop_shows_no_look_ahead_from_state_perspective(real_feature_table):
     env = TradingEnv(real_feature_table, fee_rate=0.0)
     ctrl = _fresh_controller()
 
-    reports = train_one_pass(env, ctrl, TrainConfig(), target_vol=TARGET_VOL)
+    reports = train_one_pass(env, ctrl, TrainConfig())
 
     # report[i].ts is the timestamp of the bar that produced the reward,
     # which should be real_feature_table.index[i + 1] since the very first
@@ -140,4 +129,3 @@ def test_train_loop_shows_no_look_ahead_from_state_perspective(real_feature_tabl
     for i, r in enumerate(reports):
         expected_ts = real_feature_table.index[i + 1]
         assert r.ts == expected_ts, f"step {i}: expected ts {expected_ts}, got {r.ts}"
-        assert r.actual_vol == pytest.approx(real_feature_table.iloc[i + 1]["realized_vol"])

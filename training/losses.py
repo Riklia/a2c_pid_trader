@@ -3,43 +3,55 @@ import math
 import torch
 
 
-def compute_reward(
-    realized_vol: float,
-    target_vol: float,
-    realized_vol_prev: float,
-    target_vol_prev: float,
-    action: float,
-    action_prev: float = 0.0,
-    w_error: float = 1.0,
-    w_error_rate: float = 0.0,
-    w_action: float = 0.1,
-) -> float:
-    """Computes Quadratic reward penalizing portfolio-vol tracking error, error rate, and action size.
+def step_utility(
+    position: torch.Tensor,
+    simple_return: float,
+    risk_aversion: float = 2.0,
+) -> torch.Tensor:
+    """Mean-variance utility of holding `position` over one bar, before costs.
 
-    The controlled variable in this domain is portfolio-level volatility,
-    `portfolio_vol = |position| * realized_vol`, since `realized_vol` itself
-    is exogenous and cannot be moved by the controller. Tracking error
-    is `target_vol - portfolio_vol`.
+        U = u * r - (risk_aversion / 2) * (u * r)^2
 
-    Args:
-        realized_vol: current realized volatility of the market.
-        target_vol: current target portfolio volatility.
-        realized_vol_prev: previous bar's realized volatility.
-        target_vol_prev: previous bar's target volatility.
-        action: controller output at this step, in [-1, 1].
-        action_prev: controller output at the previous step, used for error_rate.
-        w_error: weight on squared tracking error.
-        w_error_rate: weight on squared change of the tracking error.
-        w_action: weight on squared action, discourages excessive turnover.
+    Differentiable in `position`. The market return is exogenous, so the
+    gradient through u is exact and needs no critic. Under this utility the
+    unconstrained optimum is u* = mu / (risk_aversion * sigma^2).
     """
-    portfolio_vol = abs(action) * realized_vol
-    portfolio_vol_prev = abs(action_prev) * realized_vol_prev
+    pnl = position * simple_return
+    return pnl - 0.5 * risk_aversion * pnl ** 2
 
-    error = target_vol - portfolio_vol
-    error_prev = target_vol_prev - portfolio_vol_prev
-    error_rate = error - error_prev
 
-    return -(w_error * error ** 2 + w_error_rate * error_rate ** 2 + w_action * action ** 2)
+def trading_costs(
+    position: torch.Tensor,
+    prev_position: float,
+    funding_rate: float = 0.0,
+    fee_rate: float = 0.0004,
+) -> torch.Tensor:
+    """Fee on turnover plus funding paid on this bar, as a fraction of equity.
+
+    Mirrors what TradingEnv charges.
+    """
+    return fee_rate * (position - prev_position).abs() + position * funding_rate
+
+
+def vol_tracking_loss(
+    position: torch.Tensor,
+    simple_return: float,
+    target_vol: float,
+    bars_per_year: float,
+) -> torch.Tensor:
+    """QLIKE loss for tracking target_vol with exposure |position|.
+
+        L = (u * r)^2 * bars_per_year / target_vol^2 - log(u^2)
+
+    In expectation L is minimized exactly at |u| = target_vol / sigma, where
+    sigma is the true annualized vol of the bar. Unlike a squared error on
+    (|u| * sigma - target), it needs no vol estimate as a label: the realized
+    squared return is an unbiased variance sample. Vol is far more predictable
+    than returns, so this term has a much higher signal-to-noise ratio than
+    the utility. Undefined at u = 0; callers skip flat bars.
+    """
+    variance_ratio = (position * simple_return) ** 2 * bars_per_year / target_vol ** 2
+    return variance_ratio - torch.log(position ** 2)
 
 
 def td_error(

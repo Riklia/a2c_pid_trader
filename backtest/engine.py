@@ -31,16 +31,13 @@ def run_backtest(env: TradingEnv, controller: Controller) -> BacktestResult:
     that will be applied against bar i+1's return, matching TradingEnv
     no-look-ahead convention.
 
-    Controllers that keep a history of their own positions (A2CPID) are fed
-    the executed position after every step, exactly as the training loop
-    does. Without this their history would stay frozen at its last training
-    value for the whole backtest.
-
     Args:
         env: fresh environment, already constructed but not yet stepped.
-        controller: any object satisfying the Controller protocol.
+        controller: any object satisfying the Controller protocol. Its
+            per-episode state is reset before the first step.
     """
     env.reset()
+    controller.reset()
 
     timestamps: list[pd.Timestamp] = []
     rewards: list[float] = []
@@ -50,8 +47,6 @@ def run_backtest(env: TradingEnv, controller: Controller) -> BacktestResult:
         state = env.data.iloc[env.current_step]
         action = controller.act(state)
         _, reward, _ = env.step(action)
-        if hasattr(controller, "record_observation"):
-            controller.record_observation(position=action)
 
         timestamps.append(env.data.index[env.current_step])
         rewards.append(reward)

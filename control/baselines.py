@@ -14,3 +14,6 @@ class BuyAndHold:
 
     def act(self, state: pd.Series) -> float:
         return self.position
+
+    def reset(self) -> None:
+        pass

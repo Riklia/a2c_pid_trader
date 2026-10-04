@@ -1,35 +1,34 @@
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
 
+from control.vol_target import VolTargetLaw
 from data.validation import require_columns
-
-
-REQUIRED_STATE_FIELDS = {"e_p", "e_i", "e_d"}
 
 
 @dataclass
 class StaticPID:
-    """Fixed-gain PID over pre-computed error signals in the feature table.
+    """Fixed-gain vol-targeting PID. See VolTargetLaw for the control law.
 
-    The state row must contain e_p, e_i, e_d columns produced by
-    features.compute_pid_errors. The output is the target position, clipped
-    to [-1, 1] to match TradingEnv action space.
+    With the default gains (kp=1, ki=kd=0) this is plain vol targeting,
+    position = target_vol / vol_forecast, capped.
 
     Attributes:
-        kp: proportional gain.
-        ki: integral gain.
-        kd: derivative gain.
-        position_bounds: (low, high) clip range for the output.
+        law: stateful control law shared with A2CPID, owns target, caps and
+            the feedback loop state.
+        kp: proportional gain on log(target_vol / vol_forecast).
+        ki: integral gain, per bar of accumulated log portfolio-vol error.
+        kd: derivative gain on the one-bar change of the proportional error.
     """
+    law: VolTargetLaw
     kp: float = 1.0
     ki: float = 0.0
     kd: float = 0.0
-    position_bounds: tuple[float, float] = (-1.0, 1.0)
 
     def act(self, state: pd.Series) -> float:
-        require_columns(state, REQUIRED_STATE_FIELDS, "StaticPID.act")
-        raw = self.kp * state["e_p"] + self.ki * state["e_i"] + self.kd * state["e_d"]
-        low, high = self.position_bounds
-        return float(np.clip(raw, low, high))
+        require_columns(state, self.law.required_fields, "StaticPID.act")
+        ctx = self.law.begin_step(state)
+        return self.law.commit(ctx, self.kp, self.ki, self.kd)
+
+    def reset(self) -> None:
+        self.law.reset()

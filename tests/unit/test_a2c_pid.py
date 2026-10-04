@@ -1,27 +1,31 @@
 import pandas as pd
 import pytest
+import torch
 
 from control.a2c_pid import A2CPID
-from control.static_pid import StaticPID
 from control.controller_base import Controller
-from models.actor import Actor
-from models.critic import Critic
+from control.static_pid import StaticPID
+from control.vol_target import VolTargetLaw
 from data.model_features import FeatureNormalizer, FeatureSpec
 from models.pid_net import PIDNet, PIDNetInputBuilder
 
 
-def _state(e_p=0.1, e_i=0.5, e_d=-0.05, realized_vol=0.5):
-    return pd.Series({
-        "e_p": e_p, "e_i": e_i, "e_d": e_d, "realized_vol": realized_vol,
-    })
+def _state(log_return=0.001, vol_forecast=0.5, realized_vol=0.6, **extra):
+    return pd.Series({"log_return": log_return, "vol_forecast": vol_forecast, "realized_vol": realized_vol, **extra})
 
 
-def _fresh_controller(kp=1.0, ki=0.0, kd=0.0):
+def _fresh_controller(kp=1.0, ki=0.0, kd=0.0, target_vol=0.25, max_position=1.0, specs=None):
+    torch.manual_seed(0)
+    law = VolTargetLaw(target_vol=target_vol, max_position=max_position)
+    kwargs = {}
+    n_features = 2  # DEFAULT_FEATURES
+    if specs is not None:
+        kwargs["normalizer"] = FeatureNormalizer(specs)
+        n_features = len(specs)
     return A2CPID(
-        static_pid=StaticPID(kp=kp, ki=ki, kd=kd),
-        pid_net=PIDNet(),
-        actor=Actor(),
-        critic=Critic(),
+        static_pid=StaticPID(law=law, kp=kp, ki=ki, kd=kd),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(n_features)),
+        **kwargs,
     )
 
 
@@ -29,102 +33,99 @@ def test_act_returns_float_in_bounds():
     ctrl = _fresh_controller()
     action = ctrl.act(_state())
     assert isinstance(action, float)
-    assert -1.0 <= action <= 1.0
+    assert 0.0 <= action <= 1.0
 
 
 def test_missing_state_field_raises():
     ctrl = _fresh_controller()
     with pytest.raises(ValueError, match="A2CPID.act.*missing required fields"):
-        ctrl.act(pd.Series({"e_p": 0.1, "e_i": 0.5}))  # e_d, realized_vol missing
+        ctrl.act(pd.Series({"log_return": 0.0, "vol_forecast": 0.5}))  # realized_vol missing
 
 
-def test_output_is_clipped_to_position_bounds():
-    ctrl = A2CPID(
-        static_pid=StaticPID(kp=100.0),  # huge static kp forces saturation
-        pid_net=PIDNet(),
-        actor=Actor(),
-        critic=Critic(),
-    )
-    action = ctrl.act(_state(e_p=0.5))
-    assert action == 1.0
+def test_output_is_capped():
+    ctrl = _fresh_controller(target_vol=1.0)
+    assert ctrl.act(_state(vol_forecast=0.1)) == 1.0
 
 
-def test_near_zero_pid_net_start_matches_static_pid_output():
-    """With small pid_net init, first action should be close to StaticPID's."""
+def test_fresh_network_starts_close_to_its_static_pid():
     ctrl = _fresh_controller(kp=1.0)
-    static_only = StaticPID(kp=1.0)
-
-    state = _state(e_p=0.3, e_i=0.0, e_d=0.0)
-    a_full = ctrl.act(state)
-    a_static = static_only.act(state)
-
-    assert a_full == pytest.approx(a_static, abs=0.05)
+    static = StaticPID(law=VolTargetLaw(target_vol=0.25), kp=1.0)
+    state = _state(vol_forecast=0.5)
+    assert ctrl.act(state) == pytest.approx(static.act(state), abs=0.01)
 
 
-def test_record_observation_advances_history_seen_by_next_act():
+def test_differentiable_action_matches_executed_action():
     ctrl = _fresh_controller()
-    state = _state(e_p=0.2, e_i=0.0, e_d=0.0, realized_vol=0.7)
-
-    ctrl.act(state)
-    ctrl.record_observation(position=0.3)
-    ctrl.act(state)
-
-    pid_input, _ = ctrl.build_training_inputs()
-    assert pid_input[0].item() == pytest.approx(0.3)  # u(k-1)
+    action = ctrl.act(_state())
+    position, dyn = ctrl.differentiable_action()
+    assert position.item() == pytest.approx(action, rel=1e-6)
+    assert dyn.shape == (3,)
 
 
-def test_network_sees_exactly_the_configured_features():
-    specs = [FeatureSpec("e_p", norm="none"), FeatureSpec("realized_vol", symbol="ETHUSDT", norm="none")]
-    normalizer = FeatureNormalizer(specs)
-    ctrl = A2CPID(
-        static_pid=StaticPID(kp=1.0),
-        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(len(normalizer))),
-        actor=Actor(), critic=Critic(), normalizer=normalizer,
-    )
-    state = _state(e_p=0.2).copy()
-    state["ETHUSDT:realized_vol"] = 0.9
+def test_differentiable_action_carries_gradient_into_pid_net():
+    ctrl = _fresh_controller()
+    ctrl.act(_state(vol_forecast=0.4))
+    position, _ = ctrl.differentiable_action()
+    position.backward()
+    grads = [p.grad for p in ctrl.pid_net.parameters()]
+    assert any(g is not None and g.abs().sum() > 0 for g in grads)
 
-    ctrl.act(state)
 
-    pid_input, _ = ctrl.build_training_inputs()
-    assert pid_input[2:].tolist() == pytest.approx([0.2, 0.9])
+def test_differentiable_action_before_any_act_raises():
+    ctrl = _fresh_controller()
+    with pytest.raises(RuntimeError, match="before any act"):
+        ctrl.differentiable_action()
+
+
+def test_act_records_its_own_position_history():
+    ctrl = _fresh_controller()
+    first = ctrl.act(_state())
+    ctrl.act(_state())
+    assert ctrl._last_pid_input[0].item() == pytest.approx(first)
+
+
+def test_network_sees_law_errors_then_the_configured_features():
+    specs = [FeatureSpec("funding", norm="none"), FeatureSpec("realized_vol", symbol="ETHUSDT", norm="none")]
+    ctrl = _fresh_controller(specs=specs)
+    ctrl.act(_state(vol_forecast=0.5, funding=0.0002, **{"ETHUSDT:realized_vol": 0.9}))
+
+    pid_input = ctrl._last_pid_input
+    ctx = ctrl._last_ctx
+    assert pid_input[2].item() == pytest.approx(ctx.errors.e)  # log(0.25 / 0.5)
+    assert pid_input[5:].tolist() == pytest.approx([0.0002, 0.9])
 
 
 def test_missing_cross_asset_feature_raises():
-    normalizer = FeatureNormalizer([FeatureSpec("realized_vol", symbol="ETHUSDT")])
-    ctrl = A2CPID(
-        static_pid=StaticPID(kp=1.0),
-        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(1)),
-        actor=Actor(), critic=Critic(), normalizer=normalizer,
-    )
+    ctrl = _fresh_controller(specs=[FeatureSpec("realized_vol", symbol="ETHUSDT")])
     with pytest.raises(ValueError, match="ETHUSDT:realized_vol"):
         ctrl.act(_state())
 
 
 def test_network_input_size_must_match_feature_count():
-    with pytest.raises(ValueError, match="input_size=4"):
+    with pytest.raises(ValueError, match="input_size=7"):
         A2CPID(
-            static_pid=StaticPID(kp=1.0),
-            pid_net=PIDNet(input_size=7),
-            actor=Actor(), critic=Critic(),
+            static_pid=StaticPID(law=VolTargetLaw(target_vol=0.25)),
+            pid_net=PIDNet(input_size=11),
             normalizer=FeatureNormalizer([FeatureSpec("e_p"), FeatureSpec("e_i")]),
         )
 
 
-def test_build_training_inputs_before_any_act_raises():
+def test_reset_keeps_weights_but_clears_episode_state():
     ctrl = _fresh_controller()
-    with pytest.raises(RuntimeError, match="before any act"):
-        ctrl.build_training_inputs()
+    for _ in range(3):
+        ctrl.act(_state())
+    weights = [p.detach().clone() for p in ctrl.pid_net.parameters()]
+    ctrl.reset()
+    ctrl.act(_state())
+    assert ctrl._last_pid_input[0].item() == 0.0
+    assert all(torch.equal(a, b) for a, b in zip(weights, ctrl.pid_net.parameters()))
 
 
 def test_satisfies_controller_protocol():
-    from control.controller_base import Controller
-    ctrl = _fresh_controller()
-    assert isinstance(ctrl, Controller)
+    assert isinstance(_fresh_controller(), Controller)
 
 
 def test_act_is_pure_inference_no_gradient_captured():
     ctrl = _fresh_controller()
     ctrl.act(_state())
-    pid_input, _ = ctrl.build_training_inputs()
-    assert not pid_input.requires_grad
+    assert not ctrl._last_pid_input.requires_grad

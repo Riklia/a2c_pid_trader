@@ -1,80 +1,116 @@
 # Control-theoretic formulation
 
 The project is a closed-loop control problem with a stochastic plant, cast
-so it matches the actor-critic PID from Sharifi & Alasty (2022).
+so it stays close to the actor-critic-tuned PID from Sharifi & Alasty (2022).
 
 ## The loop
 
-The controller sees three precomputed error signals ($e_p$, $e_i$, $e_d$)
-derived from $r − σ_realized$. These are features, not the real tracking
-error. The real tracking error depends on $u$ and only enters through the
-reward.
+The controlled variable is **portfolio volatility**, $|u| \cdot \sigma$. The
+market's own volatility $\sigma$ is exogenous; the only thing the controller
+can move is exposure $|u|$.
+
+Direction and size are separated. Direction comes from a rule (long only by
+default), size from the PID.
 
 ## The plant
 
 Two things composed in series:
 
-1. The market, which produces $σ_realized$ and $log_return$
-   exogenously. The controller cannot influence it.
-2. **Portfolio dynamics**, where $y = |u| · σ_realized$ and equity updates
-   by $(1 + u · \text{log_return} − \text{fees} − \text{funding})$ per bar.
+1. The market, which produces $\sigma$ and the log return exogenously.
+   The controller cannot influence it.
+2. **Portfolio dynamics**: equity updates by
+   $(1 + u \cdot (e^{\text{log\_return}} - 1) - \text{fees} - \text{funding})$
+   per bar, and realized portfolio vol is measured from those returns.
 
-This differs from the quadcopter case, where the plant is fully controlled
-by `u`. Here, half of the plant is noise the controller must respond to.
+## The controller
 
-## The cost function
-
-Reward is quadratic in tracking error and action size:
+A PID in log space:
 
 $$
-R_{k+1} = -w_\text{err}\,(r - |u_k|\sigma_k)^2 \;-\; w_\text{rate}\,\Delta e_k^2 \;-\; w_\text{act}\,u_k^2
+\log |u_k| = K_p\, e_k + K_i\, e_{\text{int},k} + K_d\, e_{d,k},
+\qquad |u_k| \le \text{max\_position}
 $$
 
-Training maximizes $Σ γ^k R_{k+1}$, which is equivalent to minimizing an
-LQR-style discounted cost. The weights trade off tracking tightness,
-smoothness of the controlled variable, and position magnitude (loosely a
-transaction-cost proxy). All three are hyperparameters in the training
-config.
+- $e_k = \log(\text{target} / \hat\sigma_k)$, where $\hat\sigma_k$ is the 7-day
+  realized vol (the measured disturbance).
+- $e_{\text{int},k} = \sum_{j<k} \log(\text{target} / \text{pv}_j)$, where
+  $\text{pv}_j$ is the realized vol of the controller's own last 168 returns.
+  This is the feedback path: it depends on past actions.
+- $e_{d,k} = e_k - e_{k-1}$.
 
-## Why the controller is a PID and not just the network
+Why log space: with $K_p = 1$ and the other gains at zero,
+$|u| = \text{target}/\hat\sigma$, the textbook vol-targeting rule. In linear
+space ($u = K_p(\text{target} - \sigma)$) no choice of gains reproduces it,
+which is why the original formulation held about 0.2x exposure and never got
+near its target.
 
-Classical PID: $u = Kp \cdot e_p + Ki \cdot e_i + Kd \cdot e_d$, gains fixed. Works
-poorly when the plant's statistics shift between training and deployment.
+Anti-windup is conditional integration: when exposure is pinned at
+`max_position`, errors that would push it further up are not accumulated.
 
-Self-tuning PID keeps the structure but makes the gains the sum of a
-static part and a dynamic part:
+## Static gains
+
+The static gains are derived, not tuned (`control/tuning.py`); the config
+says `"derived"` and a number overrides it. In log space the loop is
+
+- plant: $\log \text{pv} = \log|u| + \log\sigma$, a static gain $k = 1$,
+- sensor: pv is the std of the last $W$ = `port_vol_window` returns. A
+  step in exposure enters the window one bar at a time, which is
+  approximated by a dead time $\theta = W/2$.
+
+**$K_p = 1$.** Exact vol targeting means $|u|\sigma = \text{target}$, i.e.
+$\log|u| = 1 \cdot \log(\text{target}/\sigma)$.
+
+**$K_d = 0$.** With an unbiased forecast the proportional term already sets
+the right exposure; a derivative term only helps if the forecast lags
+systematically, which is left to the network to learn.
+
+**$K_i = 1/W$.** SIMC rule (Skogestad, 2003) for an integral controller on
+$k e^{-\theta s}$: $K_i = 1/(k(\tau_c + \theta))$ with the robust default
+$\tau_c = \theta$ (about 60° phase margin), giving $K_i = 1/(2\theta) = 1/W$.
+For $W = 168$: $K_i \approx 0.006$ per bar, a closed-loop time constant of
+about 3.5 days.
+
+**Integral limit.** The integral term adds $K_i e_\text{int}$ to log
+exposure. Allowing it to change exposure by at most a factor $c$ =
+`max_integral_correction` gives $|e_\text{int}| \le \ln c / K_i$, about 68
+bars for $c = 1.5$.
+
+What remains a choice, not a derivation: the target vol (a risk budget,
+which should stay below typical market vol so exposure is not pinned at
+`max_position`), the measurement window $W$, and $c$.
+
+## Self-tuning
 
 $$
-K_p(t) = K_p^\text{static} + K_p^\text{dyn}(s_t)
+K(t) = K^\text{static} + \Delta K(s_t), \qquad \Delta K = \text{bounds} \cdot \tanh(\text{MLP}(s_t))
 $$
 
-The static part is set once (Ziegler-Nichols or by hand). The dynamic
-part is a neural network output that reacts to the current state. The
-policy stays interpretable, three gains and a sum, but it adapts.
+The static gains are the baseline controller. The network output starts near
+zero, so A2C-PID starts out identical to it, and per-gain bounds keep the
+adaptation local.
 
-## Where actor-critic fits
+## Learning signal
 
-Actor and critic are not the policy. The policy is the PID formula above.
+The paper trains the gain network through a critic's TD error. Here that
+is unnecessary: the market is exogenous, so each bar's loss is a known,
+differentiable function of $u$, and the exact gradient is
 
-- **Critic** estimates V(state). It gives a TD error after each step.
-- **Actor** predicts the next realized volatility as a Gaussian. This is
-  a learned model of the plant, not a policy head. Its sigma output keeps
-  the system exploratory.
-- **PIDNet** (the dynamic-gains network) is updated by a gradient of the
-  form $−TD \cdot u$, so actions with positive advantage get reinforced
-  through their effect on $u$.
+$$
+\frac{\partial L_k}{\partial \theta} = \frac{\partial L_k}{\partial u_k}\,\frac{\partial u_k}{\partial \Delta K}\,\frac{\partial \Delta K}{\partial \theta}.
+$$
 
-Together: critic grades the controller's actions, actor keeps a
-non-degenerate learning signal, PIDNet is the thing that actually changes.
+The previous TD-based update ($-\text{TD} \cdot u$) did not use
+$\partial L / \partial u$ at all and pushed the signed position even though the
+reward depended only on $|u|$, so it carried no consistent learning signal.
+The actor and critic modules are still in `models/` but are no longer used.
+
+See [overview.md](overview.md) for the loss terms.
 
 ## Walk-forward evaluation
 
-Training is online and incremental. A single train/test split would
-discard most of the data and depend heavily on which window was picked.
-Walk-forward slides a 1-year train window followed by a 3-month test
-window across the full history. Each fold gets a fresh controller.
-Metrics are reported per fold and averaged, so no single market regime
-dominates the result.
-
-The static PID baseline runs on the same test windows without any
-training, since its gains do not change.
+Training is online and incremental. Walk-forward slides a 1-year train
+window followed by a 3-month test window across the full history. Each fold
+gets fresh controllers, and A2C-PID is trained once per seed. Metrics are
+reported per fold and averaged, so no single market regime dominates the
+result. Buy & hold and plain vol targeting run alongside the static PID, so
+it is visible how much of any result comes from simply holding BTC.

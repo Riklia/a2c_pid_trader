@@ -24,18 +24,59 @@ def vol_tracking_rmse(realized_vol: pd.Series, target_vol: float) -> float:
     diff = realized_vol - target_vol
     return float(np.sqrt((diff ** 2).mean()))
 
-def portfolio_vol_tracking_rmse(
-    positions: pd.Series,
-    realized_vol: pd.Series,
-    target_vol: float,
-) -> float:
-    """Root mean squared deviation of |position| * realized_vol from target_vol.
+def annualized_vol(rewards: pd.Series, bars_per_year: float) -> float:
+    """Realized vol of the strategy's per-bar log returns, annualized."""
+    return float(rewards.std(ddof=1) * np.sqrt(bars_per_year))
 
-    This is the correct volatility-targeting control metric for the trading:
-    realized_vol is exogenous, so the controller can only influence the
-    exposure, and portfolio-level vol is |position| * realized_vol.
+
+def rolling_portfolio_vol_rmse(
+    rewards: pd.Series,
+    target_vol: float,
+    window: int,
+    bars_per_year: float,
+) -> float:
+    """RMSE between the strategy's rolling realized vol and target_vol.
+
+    This is the vol-targeting control metric: it measures what the portfolio
+    actually experienced, not what the controller intended.
+
+    Args:
+        rewards: per-bar log returns of the strategy.
+        target_vol: annualized vol the controller was asked to track.
+        window: bars per rolling vol estimate.
+        bars_per_year: annualization factor.
     """
-    aligned = pd.concat([positions.rename("pos"), realized_vol.rename("vol")], axis=1).dropna()
-    portfolio_vol = aligned["pos"].abs() * aligned["vol"]
-    diff = portfolio_vol - target_vol
+    rolling = rewards.rolling(window).std() * np.sqrt(bars_per_year)
+    diff = rolling.dropna() - target_vol
     return float(np.sqrt((diff ** 2).mean()))
+
+
+def turnover(positions: pd.Series) -> float:
+    """Total absolute position change, in multiples of equity."""
+    return float(positions.diff().abs().sum())
+
+
+def beta_alpha(
+    rewards: pd.Series,
+    market_returns: pd.Series,
+    bars_per_year: float,
+) -> tuple[float, float]:
+    """OLS beta of strategy returns on market returns, and annualized alpha.
+
+    Separates what a strategy earned by simply being exposed to the market
+    (beta) from what it earned on top of that (alpha). A long-only strategy
+    that wins in up markets and loses in down markets has high beta and no alpha.
+
+    Args:
+        rewards: per-bar log returns of the strategy.
+        market_returns: per-bar log returns of the traded asset, aligned on
+            the same timestamps.
+        bars_per_year: annualization factor for alpha.
+    """
+    aligned = pd.concat([rewards.rename("s"), market_returns.rename("m")], axis=1).dropna()
+    var = aligned["m"].var(ddof=1)
+    if np.isnan(var) or var < 1e-18:
+        return float("nan"), float("nan")
+    beta = aligned["s"].cov(aligned["m"]) / var
+    alpha = (aligned["s"].mean() - beta * aligned["m"].mean()) * bars_per_year
+    return float(beta), float(alpha)

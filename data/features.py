@@ -9,6 +9,7 @@ DAYS_PER_YEAR = 365
 
 VOL_WINDOW = "24h"  # realized vol lookback
 INTEGRAL_WINDOW = "720h"  # 30 days, rolling PID integral term
+FORECAST_VOL_WINDOW = "168h"  # 7 days, vol estimate used for position sizing
 
 
 def resample_ohlcv(df: pd.DataFrame, freq: str = "1h") -> pd.DataFrame:
@@ -108,6 +109,45 @@ def compute_pid_errors(
 
     e_d = e_p.diff()
     return pd.DataFrame({"e_p": e_p, "e_i": e_i, "e_d": e_d})
+
+
+def add_sizing_features(
+    table: pd.DataFrame,
+    freq: str = "1h",
+    forecast_vol_window: str = FORECAST_VOL_WINDOW,
+    trend_window: str | None = None,
+    momentum_windows: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Adds the columns the vol-targeting controllers size positions from.
+
+    Kept separate from build_feature_table so they can be derived from a
+    cached table without reloading raw data. Both columns only use data up
+    to each bar's close.
+
+    Columns added:
+        vol_forecast: annualized realized vol over forecast_vol_window. Slower
+            and less noisy than realized_vol, so sizing on it keeps turnover low.
+        trend: close / rolling mean of close over trend_window, minus 1. Only
+            added when trend_window is given.
+        mom_<window>: log return over the last <window> (time-series
+            momentum), one column per entry of momentum_windows.
+
+    Rows where any added column is still warming up are dropped.
+    """
+    log_returns = compute_log_returns(table)
+    out = table.assign(
+        vol_forecast=compute_realized_vol(log_returns, freq=freq, window=forecast_vol_window)
+    )
+    if trend_window is not None:
+        min_periods = _window_bar_count(freq, trend_window)
+        sma = out["close"].rolling(trend_window, min_periods=min_periods).mean()
+        out["trend"] = out["close"] / sma - 1.0
+    added = ["vol_forecast"] + (["trend"] if trend_window is not None else [])
+    for window in momentum_windows:
+        lag = _window_bar_count(freq, window)
+        out[f"mom_{window}"] = np.log(out["close"] / out["close"].shift(lag))
+        added.append(f"mom_{window}")
+    return out.dropna(subset=added)
 
 
 def build_feature_table(

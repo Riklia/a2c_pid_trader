@@ -1,13 +1,17 @@
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from backtest.engine import run_backtest, BacktestResult
 from control.static_pid import StaticPID
+from control.baselines import BuyAndHold
+from control.vol_target import VolTargetLaw
 from environment.trading_env import TradingEnv
 
 
-def _make_data(log_returns, e_p=None, e_i=None, e_d=None):
+def _make_data(log_returns, vol_forecast=0.5):
     n = len(log_returns)
     idx = pd.date_range("2024-01-01", periods=n, freq="1h")
     return pd.DataFrame({
@@ -15,18 +19,15 @@ def _make_data(log_returns, e_p=None, e_i=None, e_d=None):
         "log_return": log_returns,
         "funding": [0.0] * n,
         "is_funding_settlement": [False] * n,
-        "e_p": e_p if e_p is not None else [0.0] * n,
-        "e_i": e_i if e_i is not None else [0.0] * n,
-        "e_d": e_d if e_d is not None else [0.0] * n,
+        "vol_forecast": [vol_forecast] * n,
     }, index=idx)
 
 
 def test_backtest_runs_to_end():
     data = _make_data([np.nan, 0.01, 0.01, 0.01])
     env = TradingEnv(data, fee_rate=0.0)
-    controller = StaticPID(kp=1.0)  # e_p=0 -> always position=0
 
-    result = run_backtest(env, controller)
+    result = run_backtest(env, BuyAndHold())
 
     assert env.done
     assert len(result.rewards) == len(data) - 1
@@ -35,10 +36,7 @@ def test_backtest_runs_to_end():
 
 def test_backtest_result_types():
     data = _make_data([np.nan, 0.01, 0.01])
-    env = TradingEnv(data)
-    controller = StaticPID(kp=1.0)
-
-    result = run_backtest(env, controller)
+    result = run_backtest(TradingEnv(data), BuyAndHold())
 
     assert isinstance(result, BacktestResult)
     assert isinstance(result.equity.index, pd.DatetimeIndex)
@@ -46,50 +44,29 @@ def test_backtest_result_types():
 
 
 def test_flat_controller_leaves_equity_unchanged():
-    """e_p is always zero -> StaticPID always outputs 0 -> equity is flat."""
     data = _make_data([np.nan, 0.5, -0.3, 0.2])
-    env = TradingEnv(data, fee_rate=0.0)
-    controller = StaticPID(kp=1.0)
-
-    result = run_backtest(env, controller)
+    result = run_backtest(TradingEnv(data, fee_rate=0.0), BuyAndHold(position=0.0))
 
     assert (result.equity == 1.0).all()
     assert (result.positions == 0.0).all()
 
 
-def test_positive_error_makes_controller_go_long():
-    data = _make_data(
-        log_returns=[np.nan, 0.1, 0.0],
-        e_p=[0.5, 0.5, 0.5],
-    )
-    env = TradingEnv(data, fee_rate=0.0)
-    controller = StaticPID(kp=1.0)
+def test_vol_targeting_position_is_applied_to_next_bar():
+    data = _make_data(log_returns=[np.nan, 0.1, 0.0], vol_forecast=0.5)
+    controller = StaticPID(law=VolTargetLaw(target_vol=0.25))
 
-    result = run_backtest(env, controller)
+    result = run_backtest(TradingEnv(data, fee_rate=0.0), controller)
 
-    # first action taken at step 0 based on e_p=0.5 -> position 0.5, applied against bar1's return
-    # equity_after_step0 = 1.0 * (1 + 0.5 * (e^0.1 - 1))
-    assert result.equity.iloc[1] == pytest.approx(1.0 + 0.5 * np.expm1(0.1))
+    # position 0.25 / 0.5 = 0.5 chosen at bar 0, earns bar 1's simple return
     assert result.actions.iloc[0] == pytest.approx(0.5)
-
-class _RecordingController:
-    """Controller that remembers every observation the backtest feeds it."""
-
-    def __init__(self):
-        self.observations = []
-
-    def act(self, state):
-        return 0.5
-
-    def record_observation(self, position):
-        self.observations.append(position)
+    assert result.equity.iloc[1] == pytest.approx(1.0 + 0.5 * math.expm1(0.1))
 
 
-def test_backtest_feeds_observations_to_controllers_that_record_them():
-    data = _make_data([np.nan, 0.01, -0.02, 0.03])
-    controller = _RecordingController()
+def test_backtest_resets_controller_state():
+    data = _make_data([np.nan, 0.05, -0.04, 0.03, -0.02])
+    controller = StaticPID(law=VolTargetLaw(target_vol=0.25, port_vol_window=2), ki=0.5)
 
-    run_backtest(TradingEnv(data, fee_rate=0.0), controller)
+    first = run_backtest(TradingEnv(data, fee_rate=0.0), controller)
+    second = run_backtest(TradingEnv(data, fee_rate=0.0), controller)
 
-    # one observation per step: the executed position
-    assert controller.observations == [0.5, 0.5, 0.5]
+    pd.testing.assert_series_equal(first.actions, second.actions)

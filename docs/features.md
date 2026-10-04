@@ -12,15 +12,15 @@ The walk-forward script prints the same table at the start of every run.
 
 | Consumer | Inputs | Normalization | Configurable |
 |---|---|---|---|
-| PID law (`static_pid`, and the static part of `a2c_pid`) | `e_p`, `e_i`, `e_d` | raw: the law needs original units to produce a meaningful position | no |
-| PIDNet (dynamic gains) | `u(k-1)`, `u(k-2)` (own last positions, raw), then every entry of `a2c_pid.features` | per feature, see below | yes |
-| Actor / critic (training only) | `[position, realized_vol, realized_vol]` | raw | no |
+| Control law (`static_pid`, and the static part of `a2c_pid`) | `vol_forecast` for size, `controller.trend_column` for direction, plus its own realized returns for the integral term | raw | via the `controller` section |
+| PIDNet (dynamic gains) | `u(k-1)`, `u(k-2)` (own last positions), the law's errors `e`, `e_int`, `e_d`, then every entry of `a2c_pid.features` | positions and errors raw (already dimensionless), features per entry | features: yes |
 
 ## Where values come from
 
 Every symbol gets the same feature table, built from its minute candles and
 funding snapshots by `data.features.build_feature_table` and cached under
-`.cache/features/`. Its columns usable as model features are listed, with how
+`.cache/features/`; the sizing columns (`vol_forecast`, `trend`, `mom_*`)
+are added on top by `data.features.add_sizing_features`. Its columns usable as model features are listed, with how
 each is computed, in `COLUMN_DESCRIPTIONS` in
 [data/model_features.py](../data/model_features.py):
 
@@ -32,6 +32,9 @@ each is computed, in `COLUMN_DESCRIPTIONS` in
 | `e_i` | mean of `e_p` over `features.integral_window` (rolling) or all history (expanding) |
 | `e_d` | one-bar change of `e_p` |
 | `funding` | last funding rate known at the bar's close, 0 before funding history starts |
+| `vol_forecast` | annualized std of hourly log returns over `controller.forecast_vol_window`, what the law sizes with |
+| `trend` | close / mean close over `controller.trend_window` − 1 |
+| `mom_<window>` | log return over the last `<window>`, one column per `controller.momentum_windows` entry |
 | `available` | other symbols only, added automatically under the `fill` policy: 1 if the symbol has a value for the bar, else 0 |
 
 Every value in a bar's row is known at that bar's close. The environment
@@ -57,7 +60,8 @@ ahead.
 - `norm`: `zscore` (default) or `none`.
 
 The network's input size follows the list automatically
-(2 positions + number of features + availability flags, see below).
+(2 positions + 3 law errors + number of features + availability flags,
+see below).
 
 ## Normalization
 
@@ -96,7 +100,8 @@ Delete its entry from `a2c_pid.features`.
 ## How to add a feature
 
 - **An existing column, for the traded or another symbol:** add an entry to
-  `a2c_pid.features`. Nothing else.
+  `a2c_pid.features`. Nothing else. A new momentum window needs its window
+  in `controller.momentum_windows` too.
 - **A new column:**
   1. Compute it in `data.features.build_feature_table`, using only data up to
      each bar's close (`tests/unit/test_features.py` has a look-ahead test to

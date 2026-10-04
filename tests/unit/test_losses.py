@@ -1,65 +1,49 @@
 import pytest
 import torch
 
-from training.losses import compute_reward, td_error, actor_loss, critic_loss
+import math
+
+from training.losses import (
+    step_utility, trading_costs, vol_tracking_loss, td_error, actor_loss, critic_loss,
+)
 
 
-def test_zero_error_zero_action_gives_zero_reward():
-    r = compute_reward(
-        realized_vol=1.0, target_vol=0.5,
-        realized_vol_prev=1.0, target_vol_prev=0.5,
-        action=0.5, action_prev=0.5,
-        w_error=1.0, w_error_rate=1.0, w_action=0.0,
-    )
-    assert r == pytest.approx(0.0)
+def test_step_utility_is_pnl_minus_variance_penalty():
+    u = step_utility(torch.tensor(0.5), simple_return=0.02, risk_aversion=4.0)
+    # pnl = 0.01, penalty = 0.5 * 4 * 0.01^2 = 0.0002
+    assert u.item() == pytest.approx(0.0098)
 
 
-def test_reward_is_always_nonpositive():
-    r = compute_reward(realized_vol=0.7, target_vol=0.5,
-                        realized_vol_prev=0.6, target_vol_prev=0.5,
-                        action=0.3)
-    assert r <= 0.0
+def test_step_utility_gradient_is_exact():
+    position = torch.tensor(0.5, requires_grad=True)
+    step_utility(position, simple_return=0.02, risk_aversion=4.0).backward()
+    # dU/du = r - risk_aversion * u * r^2
+    assert position.grad.item() == pytest.approx(0.02 - 4.0 * 0.5 * 0.02 ** 2)
 
 
-def test_zero_position_gives_full_target_as_error():
-    r = compute_reward(
-        realized_vol=0.7, target_vol=0.5,
-        realized_vol_prev=0.7, target_vol_prev=0.5,
-        action=0.0, w_error=1.0, w_error_rate=0.0, w_action=0.0,
-    )
-    # error = 0.5 - 0*0.7 = 0.5 -> squared = 0.25
-    assert r == pytest.approx(-0.25)
+def test_trading_costs_charge_fee_on_turnover_and_funding_on_position():
+    costs = trading_costs(torch.tensor(0.8), prev_position=0.3, funding_rate=0.001, fee_rate=0.0004)
+    assert costs.item() == pytest.approx(0.0004 * 0.5 + 0.8 * 0.001)
 
 
-def test_portfolio_vol_at_target_gives_zero_error_term():
-    r = compute_reward(
-        realized_vol=1.0, target_vol=0.5,
-        realized_vol_prev=1.0, target_vol_prev=0.5,
-        action=0.5, w_error=1.0, w_error_rate=0.0, w_action=0.0,
-    )
-    # portfolio_vol = 0.5*1.0 = 0.5 = target -> error = 0
-    assert r == pytest.approx(0.0)
+def test_trading_costs_zero_without_change_or_funding():
+    assert trading_costs(torch.tensor(0.4), prev_position=0.4, fee_rate=0.0004).item() == 0.0
 
 
-def test_short_position_still_reduces_error():
-    r_long = compute_reward(
-        realized_vol=1.0, target_vol=0.5,
-        realized_vol_prev=1.0, target_vol_prev=0.5,
-        action=0.5, w_error=1.0, w_error_rate=0.0, w_action=0.0,
-    )
-    r_short = compute_reward(
-        realized_vol=1.0, target_vol=0.5,
-        realized_vol_prev=1.0, target_vol_prev=0.5,
-        action=-0.5, w_error=1.0, w_error_rate=0.0, w_action=0.0,
-    )
-    assert r_long == pytest.approx(r_short)
+def test_vol_tracking_loss_is_minimized_at_target_over_true_vol():
+    """Averaged over many bars, the QLIKE minimizer is |u| = target / sigma."""
+    sigma, target, n = 0.8, 0.2, 200_000
+    returns = torch.randn(n, generator=torch.Generator().manual_seed(0)) * sigma / math.sqrt(8760)
+    grid = torch.linspace(0.05, 0.6, 56)
+    losses = [vol_tracking_loss(u, returns, target, 8760).mean().item() for u in grid]
+    best = grid[int(torch.tensor(losses).argmin())].item()
+    assert best == pytest.approx(target / sigma, abs=0.02)
 
 
-def test_reward_action_term_matches_formula():
-    r = compute_reward(realized_vol=0.5, target_vol=0.5,
-                        realized_vol_prev=0.5, target_vol_prev=0.5,
-                        action=0.5, w_error=0.0, w_error_rate=0.0, w_action=1.0)
-    assert r == pytest.approx(-0.25)
+def test_vol_tracking_loss_is_symmetric_in_position_sign():
+    a = vol_tracking_loss(torch.tensor(0.5), 0.01, 0.3, 8760)
+    b = vol_tracking_loss(torch.tensor(-0.5), 0.01, 0.3, 8760)
+    assert a.item() == pytest.approx(b.item())
 
 
 def test_td_error_matches_definition():

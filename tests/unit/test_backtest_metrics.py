@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.metrics import total_return, sharpe_ratio, max_drawdown, vol_tracking_rmse, portfolio_vol_tracking_rmse
+from backtest.metrics import (
+    total_return, sharpe_ratio, max_drawdown, vol_tracking_rmse,
+    annualized_vol, rolling_portfolio_vol_rmse, turnover, beta_alpha,
+)
 
 
 def test_total_return_flat_series_is_zero():
@@ -49,26 +52,39 @@ def test_vol_tracking_rmse_matches_hand_calculation():
     # RMSE = sqrt(((-0.1)^2 + 0^2 + 0.1^2) / 3) = sqrt(0.02/3)
     assert vol_tracking_rmse(vol, target_vol=0.5) == pytest.approx(np.sqrt(0.02 / 3))
 
-def test_portfolio_vol_tracking_rmse_zero_when_action_hits_target():
-    positions = pd.Series([0.5, 0.5, 0.5])
-    realized_vol = pd.Series([1.0, 1.0, 1.0])
-    # |0.5| * 1.0 = 0.5 = target -> RMSE = 0
-    assert portfolio_vol_tracking_rmse(positions, realized_vol, target_vol=0.5) == 0.0
+def test_annualized_vol_scales_with_sqrt_of_bars():
+    rewards = pd.Series([0.01, -0.01] * 50)
+    assert annualized_vol(rewards, bars_per_year=100) == pytest.approx(rewards.std() * 10)
 
 
-def test_portfolio_vol_tracking_rmse_treats_short_and_long_symmetrically():
-    long = pd.Series([0.5, 0.5])
-    short = pd.Series([-0.5, -0.5])
-    rv = pd.Series([1.0, 1.0])
-    assert (
-        portfolio_vol_tracking_rmse(long, rv, target_vol=0.3)
-        == portfolio_vol_tracking_rmse(short, rv, target_vol=0.3)
-    )
+def test_rolling_portfolio_vol_rmse_zero_when_rolling_vol_equals_target():
+    rewards = pd.Series([0.01, -0.01] * 50)
+    window_vol = pd.Series([0.01, -0.01]).std()  # every 2-bar window has this std
+    assert rolling_portfolio_vol_rmse(rewards, target_vol=window_vol, window=2, bars_per_year=1) == pytest.approx(0.0)
 
 
-def test_portfolio_vol_tracking_rmse_matches_hand_calculation():
-    positions = pd.Series([0.4, 0.6])
-    realized_vol = pd.Series([1.0, 1.0])
-    # portfolio_vol = [0.4, 0.6], target=0.5 -> diffs [-0.1, 0.1] -> RMSE = sqrt(0.02/2) = 0.1
-    result = portfolio_vol_tracking_rmse(positions, realized_vol, target_vol=0.5)
-    assert result == pytest.approx(0.1)
+def test_rolling_portfolio_vol_rmse_measures_distance_from_target():
+    rewards = pd.Series([0.01, -0.01] * 50)
+    window_vol = pd.Series([0.01, -0.01]).std()
+    rmse = rolling_portfolio_vol_rmse(rewards, target_vol=window_vol + 0.003, window=2, bars_per_year=1)
+    assert rmse == pytest.approx(0.003)
+
+
+def test_turnover_sums_absolute_position_changes():
+    assert turnover(pd.Series([0.0, 0.5, -0.5, -0.5])) == pytest.approx(1.5)
+
+
+def test_beta_alpha_of_scaled_market_is_scale_with_no_alpha():
+    rng = np.random.default_rng(0)
+    market = pd.Series(rng.normal(0, 0.01, 500))
+    beta, alpha = beta_alpha(0.6 * market, market, bars_per_year=8760)
+    assert beta == pytest.approx(0.6)
+    assert alpha == pytest.approx(0.0, abs=1e-9)
+
+
+def test_beta_alpha_detects_constant_edge_on_top_of_market():
+    rng = np.random.default_rng(1)
+    market = pd.Series(rng.normal(0, 0.01, 500))
+    beta, alpha = beta_alpha(0.5 * market + 1e-5, market, bars_per_year=8760)
+    assert beta == pytest.approx(0.5)
+    assert alpha == pytest.approx(1e-5 * 8760)

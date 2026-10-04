@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import torch
 
+from control.vol_target import PIDErrors
 from data.model_features import DEFAULT_FEATURES
 from models.pid_net import PIDNet, PIDNetInputBuilder
 
@@ -51,13 +52,23 @@ def test_input_size_is_configurable():
     assert net(torch.zeros(11)).shape == (3,)
 
 
-def test_input_vector_is_position_history_then_features():
+def test_per_gain_bounds_are_respected():
+    net = PIDNet(input_size=4, gain_bounds=(1.0, 0.01, 5.0))
+    out = net(torch.ones(4) * 100.0)
+    assert (out.abs() <= torch.tensor([1.0, 0.01, 5.0]) + 1e-6).all()
+
+
+def _errors(e=0.1, e_int=50.0, e_d=-0.05):
+    return PIDErrors(e=e, e_int=e_int, e_d=e_d)
+
+
+def test_input_vector_is_positions_then_law_errors_then_features():
     builder = PIDNetInputBuilder()
-    vec = builder.build(FEATURES)
+    vec = builder.build(_errors(), integral_limit=100.0, features=FEATURES)
     assert vec.shape == (PIDNetInputBuilder.input_size(len(FEATURES)),)
-    # u(k-1), u(k-2) are zero at start
-    assert torch.allclose(vec[:2], torch.zeros(2))
-    assert torch.allclose(vec[2:], torch.tensor(FEATURES, dtype=torch.float32))
+    assert torch.allclose(vec[:2], torch.zeros(2))  # u(k-1), u(k-2) are zero at start
+    assert vec[2:5].tolist() == pytest.approx([0.1, 0.5, -0.05])  # e, e_int / limit, e_d
+    assert torch.allclose(vec[5:], torch.tensor(FEATURES, dtype=torch.float32))
 
 
 def test_record_shifts_history():
@@ -65,7 +76,7 @@ def test_record_shifts_history():
     builder.record(position=0.3)
     builder.record(position=0.5)
 
-    vec = builder.build(FEATURES)
+    vec = builder.build(_errors(), 100.0, FEATURES)
     # newest first: u(k-1)=0.5, u(k-2)=0.3
     assert vec[0].item() == pytest.approx(0.5)
     assert vec[1].item() == pytest.approx(0.3)
@@ -76,7 +87,7 @@ def test_only_last_two_values_are_kept():
     for i in range(5):
         builder.record(position=float(i))
 
-    vec = builder.build(FEATURES)
+    vec = builder.build(_errors(), 100.0, FEATURES)
     assert vec[0].item() == pytest.approx(4.0)
     assert vec[1].item() == pytest.approx(3.0)
 
@@ -85,7 +96,7 @@ def test_reset_clears_history():
     builder = PIDNetInputBuilder()
     builder.record(position=0.9)
     builder.reset()
-    vec = builder.build(FEATURES)
+    vec = builder.build(_errors(), 100.0, FEATURES)
     assert torch.allclose(vec[:2], torch.zeros(2))
 
 
@@ -95,6 +106,6 @@ def test_builder_output_feeds_net_correctly():
     net = PIDNet(input_size=PIDNetInputBuilder.input_size(len(FEATURES)))
 
     builder.record(position=0.5)
-    gains = net(builder.build(FEATURES))
+    gains = net(builder.build(_errors(), 100.0, FEATURES))
     assert gains.shape == (3,)
     assert not torch.isnan(gains).any()

@@ -79,6 +79,14 @@ def test_target_position_is_clipped_to_valid_range():
     assert env.position == 1.0
 
 
+def test_max_position_allows_leverage():
+    data = _make_data(log_returns=[np.nan, 0.0, 0.0])
+    env = TradingEnv(data, fee_rate=0.0, max_position=2.0)
+
+    env.step(target_position=5.0)
+    assert env.position == 2.0
+
+
 def test_full_long_position_tracks_price_exactly():
     """Compounding simple returns at position 1 must reproduce the price path."""
     prices = np.array([100.0, 110.0, 99.0, 120.0])

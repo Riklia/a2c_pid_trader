@@ -312,6 +312,34 @@ def test_snapshot_rows_do_not_count_as_settlements(hourly_ohlcv):
     assert not result["is_funding_settlement"].any()
 
 
+def test_sizing_features_add_forecast_vol_and_trend(varying_hourly_ohlcv):
+    table = varying_hourly_ohlcv.assign(log_return=features.compute_log_returns(varying_hourly_ohlcv))
+    result = features.add_sizing_features(table, freq="1h", forecast_vol_window="3h", trend_window="4h")
+
+    returns = features.compute_log_returns(varying_hourly_ohlcv)
+    expected_vol = features.compute_realized_vol(returns, freq="1h", window="3h")
+    expected_trend = varying_hourly_ohlcv["close"] / varying_hourly_ohlcv["close"].rolling(4).mean() - 1
+
+    # trend needs 4 bars, vol needs 3 returns (4 bars), so the first complete row is 03:00
+    assert result.index[0] == pd.Timestamp("2024-01-01 03:00")
+    pd.testing.assert_series_equal(result["vol_forecast"], expected_vol.loc[result.index], check_names=False)
+    pd.testing.assert_series_equal(result["trend"], expected_trend.loc[result.index], check_names=False)
+
+
+def test_sizing_features_skip_trend_when_not_requested(varying_hourly_ohlcv):
+    result = features.add_sizing_features(varying_hourly_ohlcv, freq="1h", forecast_vol_window="3h")
+    assert "trend" not in result.columns
+    assert result["vol_forecast"].notna().all()
+
+
+def test_sizing_features_have_no_look_ahead(varying_hourly_ohlcv):
+    cutoff = pd.Timestamp("2024-01-01 06:00")
+    kwargs = dict(freq="1h", forecast_vol_window="3h", trend_window="3h")
+    full = features.add_sizing_features(varying_hourly_ohlcv, **kwargs)
+    truncated = features.add_sizing_features(varying_hourly_ohlcv[varying_hourly_ohlcv.index <= cutoff], **kwargs)
+    pd.testing.assert_frame_equal(full.loc[truncated.index], truncated)
+
+
 def test_bars_before_first_funding_snapshot_are_kept_with_zero_funding(varying_hourly_ohlcv):
     late_funding = pd.DataFrame(
         {"mark_price": [100.0], "funding": [0.0003], "time_left_seconds": [3600]},
@@ -325,3 +353,12 @@ def test_bars_before_first_funding_snapshot_are_kept_with_zero_funding(varying_h
     assert len(early) > 0
     assert (early["funding"] == 0.0).all()
     assert result.loc["2024-01-01 06:00", "funding"] == pytest.approx(0.0003)
+
+
+def test_momentum_columns_are_lagged_log_returns(varying_hourly_ohlcv):
+    result = features.add_sizing_features(
+        varying_hourly_ohlcv, freq="1h", forecast_vol_window="3h", momentum_windows=("2h",),
+    )
+    close = varying_hourly_ohlcv["close"]
+    expected = np.log(close / close.shift(2)).loc[result.index]
+    pd.testing.assert_series_equal(result["mom_2h"], expected, check_names=False)

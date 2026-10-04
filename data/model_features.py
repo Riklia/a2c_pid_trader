@@ -16,8 +16,8 @@ The list itself lives in the config (`a2c_pid.features`), one entry per feature:
 Bars where another symbol has no data are handled per a2c_pid.cross_asset_missing
 (see MISSING_POLICIES).
 
-The PID law itself does not use these features; it always reads the raw error
-signals e_p, e_i, e_d. See docs/features.md.
+The control law does not use these features; it sizes from vol_forecast and its
+own error signals, and the network always sees those errors too. See docs/features.md.
 """
 import math
 from dataclasses import dataclass
@@ -40,6 +40,9 @@ COLUMN_DESCRIPTIONS = {
     "e_i": "mean of e_p over features.integral_window (rolling) or all history (expanding)",
     "e_d": "one-bar change of e_p",
     "funding": "last funding rate known at the bar's close, 0 before funding history starts",
+    "vol_forecast": "annualized std of hourly log returns over controller.forecast_vol_window, "
+                    "the volatility the control law sizes positions with",
+    "trend": "close / mean close over controller.trend_window - 1",
     # not part of any feature table: added by attach_cross_asset_features
     AVAILABLE: "1 if this symbol has a value for the bar, else 0 (cross-asset only, added automatically)",
 }
@@ -57,6 +60,23 @@ NORMALIZATIONS = {
 }
 
 
+MOMENTUM_PREFIX = "mom_"
+
+
+def column_description(column: str) -> str | None:
+    """How a feature-table column is computed, None if it is not a known column.
+
+    Momentum columns are named after their window (mom_720h, mom_2160h, ...),
+    one per entry of controller.momentum_windows.
+    """
+    if column in COLUMN_DESCRIPTIONS:
+        return COLUMN_DESCRIPTIONS[column]
+    if column.startswith(MOMENTUM_PREFIX):
+        window = column[len(MOMENTUM_PREFIX):]
+        return f"log return over the last {window} (time-series momentum); {window} must be in controller.momentum_windows"
+    return None
+
+
 @dataclass(frozen=True)
 class FeatureSpec:
     """One model input: a feature-table column, its source symbol and its normalization."""
@@ -65,9 +85,10 @@ class FeatureSpec:
     norm: str = "zscore"
 
     def __post_init__(self):
-        if self.column not in COLUMN_DESCRIPTIONS:
+        if column_description(self.column) is None:
             raise ValueError(
-                f"unknown feature column {self.column!r}, available: {sorted(COLUMN_DESCRIPTIONS)}"
+                f"unknown feature column {self.column!r}, available: {sorted(COLUMN_DESCRIPTIONS)} "
+                f"or {MOMENTUM_PREFIX}<window>"
             )
         if self.norm not in NORMALIZATIONS:
             raise ValueError(f"unknown normalization {self.norm!r}, available: {sorted(NORMALIZATIONS)}")
@@ -80,13 +101,10 @@ class FeatureSpec:
         return self.column if self.symbol is None else f"{self.symbol}:{self.column}"
 
 
-# What the network saw before features became configurable, minus the raw
-# realized-vol history it used to keep separately.
+# Fallback when no list is configured: the market's short- and long-window vol.
 DEFAULT_FEATURES: tuple[FeatureSpec, ...] = (
     FeatureSpec("realized_vol"),
-    FeatureSpec("e_p"),
-    FeatureSpec("e_i"),
-    FeatureSpec("e_d"),
+    FeatureSpec("vol_forecast"),
 )
 
 
@@ -126,6 +144,7 @@ def attach_cross_asset_features(
     others: dict[str, pd.DataFrame],
     specs: list[FeatureSpec],
     missing: str = "fill",
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """Adds `SYMBOL:column` columns from other symbols' feature tables to the main table.
 
@@ -137,7 +156,7 @@ def attach_cross_asset_features(
     Bars where a requested value is missing (the other symbol's history starts
     later, or it has a gap) are handled per `missing`, see MISSING_POLICIES:
     "fill" keeps them as NaN and adds a SYMBOL:available column (1/0) per
-    symbol; "drop" removes them. Either way coverage is reported.
+    symbol; "drop" removes them. Coverage is printed unless verbose is False.
     """
     if missing not in MISSING_POLICIES:
         raise ValueError(f"unknown missing policy {missing!r}, available: {sorted(MISSING_POLICIES)}")
@@ -157,14 +176,15 @@ def attach_cross_asset_features(
     for symbol, names in added.items():
         available = out[names].notna().all(axis=1)
         first = out.index[available][0] if available.any() else None
-        print(f"cross-asset {symbol}: values for {available.mean():.0%} of bars, first at {first}")
+        if verbose:
+            print(f"cross-asset {symbol}: values for {available.mean():.0%} of bars, first at {first}")
         if missing == "fill":
             out[f"{symbol}:{AVAILABLE}"] = available.astype(float)
 
     if missing == "drop":
         all_names = [n for names in added.values() for n in names]
         keep = out[all_names].notna().all(axis=1)
-        if not keep.all():
+        if verbose and not keep.all():
             print(f"cross-asset features: dropped {int((~keep).sum())} of {len(out)} bars; data now spans "
                   f"{out.index[keep][0]} .. {out.index[keep][-1]}")
         out = out[keep]
@@ -230,7 +250,7 @@ def describe_features(
         {
             "input": spec.name,
             "source": spec.symbol or traded,
-            "computed as": COLUMN_DESCRIPTIONS[spec.column],
+            "computed as": column_description(spec.column),
             "norm": spec.norm,
         }
         for spec in specs

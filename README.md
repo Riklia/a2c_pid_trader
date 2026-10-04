@@ -19,7 +19,7 @@ machinery, not the policy. The policy is still a PID.
 ```bash
 pip install -r requirements.txt
 cp .env.example .env    # fill in DEV_DB_DSN
-python scripts/run_walk_forward.py configs/walk_forward.json
+python scripts/run_walk_forward.py configs/walk_forward.json --workers 8   # folds in parallel
 python scripts/plot_run.py results/run_<timestamp>
 python scripts/describe_features.py configs/walk_forward.json   # what the model sees
 ```

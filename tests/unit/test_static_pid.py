@@ -1,50 +1,48 @@
+import math
+
 import pandas as pd
 import pytest
 
+from control.controller_base import Controller
 from control.static_pid import StaticPID
+from control.vol_target import VolTargetLaw
 
 
-def _state(e_p=0.0, e_i=0.0, e_d=0.0) -> pd.Series:
-    return pd.Series({"e_p": e_p, "e_i": e_i, "e_d": e_d})
+def _state(log_return=0.0, vol_forecast=0.5):
+    return pd.Series({"log_return": log_return, "vol_forecast": vol_forecast})
 
 
-def test_zero_error_gives_zero_position():
-    pid = StaticPID(kp=1.0, ki=0.5, kd=0.2)
-    assert pid.act(_state()) == 0.0
+def test_default_gains_give_plain_vol_targeting():
+    pid = StaticPID(law=VolTargetLaw(target_vol=0.2))
+    assert pid.act(_state(vol_forecast=0.8)) == pytest.approx(0.25)
 
 
-def test_positive_error_gives_positive_position():
-    """realized_vol below target -> e_p > 0 -> controller increases exposure."""
-    pid = StaticPID(kp=1.0, ki=0.0, kd=0.0)
-    assert pid.act(_state(e_p=0.5)) == pytest.approx(0.5)
+def test_gains_change_the_position():
+    state = _state(vol_forecast=0.8)
+    soft = StaticPID(law=VolTargetLaw(target_vol=0.2), kp=0.5).act(state)
+    hard = StaticPID(law=VolTargetLaw(target_vol=0.2), kp=1.5).act(state)
+    assert soft == pytest.approx(math.exp(0.5 * math.log(0.25)))
+    assert hard < 0.25 < soft
 
 
-def test_negative_error_gives_negative_position():
-    """realized_vol above target -> e_p < 0 -> controller reduces exposure."""
-    pid = StaticPID(kp=1.0, ki=0.0, kd=0.0)
-    assert pid.act(_state(e_p=-0.3)) == pytest.approx(-0.3)
+def test_position_never_exceeds_cap():
+    pid = StaticPID(law=VolTargetLaw(target_vol=0.5, max_position=1.0))
+    assert pid.act(_state(vol_forecast=0.05)) == 1.0
 
-
-def test_output_is_clipped_to_bounds():
-    pid = StaticPID(kp=10.0, ki=0.0, kd=0.0)  # huge gain forces saturation
-    assert pid.act(_state(e_p=0.5)) == 1.0
-    assert pid.act(_state(e_p=-0.5)) == -1.0
-
-
-def test_custom_bounds_are_respected():
-    pid = StaticPID(kp=1.0, position_bounds=(0.0, 1.0))
-    assert pid.act(_state(e_p=-0.5)) == 0.0
-    assert pid.act(_state(e_p=0.5)) == pytest.approx(0.5)
-
-
-def test_all_three_terms_combine_linearly():
-    pid = StaticPID(kp=1.0, ki=0.5, kd=0.25)
-    # 1.0 * 0.4 + 0.5 * 0.6 + 0.25 * (-0.8) = 0.4 + 0.3 - 0.2 = 0.5
-    expected = 0.5
-    assert pid.act(_state(e_p=0.4, e_i=0.6, e_d=-0.8)) == pytest.approx(expected)
 
 def test_missing_state_field_raises_with_context():
-    pid = StaticPID(kp=1.0)
-    state = pd.Series({"e_p": 0.5, "e_i": 0.1})  # e_d missing
+    pid = StaticPID(law=VolTargetLaw(target_vol=0.5))
     with pytest.raises(ValueError, match="StaticPID.act.*missing required fields"):
-        pid.act(state)
+        pid.act(pd.Series({"log_return": 0.0}))
+
+
+def test_reset_restarts_the_law():
+    pid = StaticPID(law=VolTargetLaw(target_vol=0.5, port_vol_window=2), ki=0.1)
+    for r in [0.01, -0.02, 0.03, -0.01]:
+        pid.act(_state(log_return=r))
+    pid.reset()
+    assert pid.law.portfolio_vol() is None
+
+
+def test_satisfies_controller_protocol():
+    assert isinstance(StaticPID(law=VolTargetLaw(target_vol=0.5)), Controller)

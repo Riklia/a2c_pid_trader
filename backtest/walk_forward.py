@@ -4,7 +4,8 @@ import pandas as pd
 
 from backtest.engine import run_backtest, BacktestResult
 from backtest.metrics import (
-    total_return, sharpe_ratio, max_drawdown, portfolio_vol_tracking_rmse,
+    total_return, sharpe_ratio, max_drawdown, annualized_vol,
+    rolling_portfolio_vol_rmse, turnover, beta_alpha,
 )
 from control.controller_base import Controller
 from environment.trading_env import TradingEnv
@@ -74,7 +75,12 @@ class FoldMetrics:
     total_return: float
     sharpe: float
     max_drawdown: float
+    ann_vol: float
     vol_rmse: float
+    turnover: float
+    beta: float
+    alpha: float
+    seed: int | None = None
 
 
 def evaluate_on_test(
@@ -84,10 +90,17 @@ def evaluate_on_test(
     target_vol: float,
     fee_rate: float,
     bars_per_year: float,
+    max_position: float = 1.0,
+    vol_window: int = 168,
+    seed: int | None = None,
 ) -> tuple[FoldMetrics, BacktestResult]:
-    """Runs `controller` on fold.test_data, returns metrics and the raw result."""
-    env = TradingEnv(fold.test_data, fee_rate=fee_rate)
+    """Runs `controller` on fold.test_data, returns metrics and the raw result.
+
+    vol_window is the number of bars per rolling estimate in vol_rmse.
+    """
+    env = TradingEnv(fold.test_data, fee_rate=fee_rate, max_position=max_position)
     result = run_backtest(env, controller)
+    beta, alpha = beta_alpha(result.rewards, fold.test_data["log_return"], bars_per_year)
 
     metrics = FoldMetrics(
         fold_id=fold.fold_id,
@@ -98,6 +111,11 @@ def evaluate_on_test(
         total_return=total_return(result.equity),
         sharpe=sharpe_ratio(result.rewards, bars_per_year=bars_per_year),
         max_drawdown=max_drawdown(result.equity),
-        vol_rmse=portfolio_vol_tracking_rmse(result.positions, fold.test_data["realized_vol"], target_vol),
+        ann_vol=annualized_vol(result.rewards, bars_per_year),
+        vol_rmse=rolling_portfolio_vol_rmse(result.rewards, target_vol, vol_window, bars_per_year),
+        turnover=turnover(result.positions),
+        beta=beta,
+        alpha=alpha,
+        seed=seed,
     )
     return metrics, result
