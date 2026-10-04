@@ -18,6 +18,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+COLORS = {"static_pid": "tab:red", "a2c_pid": "tab:blue", "buy_hold": "tab:gray"}
+
+
 def load_trace(run_dir: Path, fold_id: int, controller_name: str) -> pd.DataFrame:
     path = run_dir / "traces" / f"fold{fold_id:02d}_{controller_name}.parquet"
     return pd.read_parquet(path)
@@ -65,14 +68,14 @@ def plot_metrics_summary(run_dir: Path, out_path: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     pivot_sharpe = metrics.pivot(index="fold_id", columns="controller_name", values="sharpe")
-    pivot_sharpe.plot(kind="bar", ax=axes[0], color=["tab:blue", "tab:red"])
+    pivot_sharpe.plot(kind="bar", ax=axes[0], color=[COLORS.get(c, "black") for c in pivot_sharpe.columns])
     axes[0].set_title("Sharpe ratio per fold")
     axes[0].axhline(0.0, color="gray", linewidth=0.7)
     axes[0].set_ylabel("Sharpe")
     axes[0].grid(True, alpha=0.3, axis="y")
 
     pivot_rmse = metrics.pivot(index="fold_id", columns="controller_name", values="vol_rmse")
-    pivot_rmse.plot(kind="bar", ax=axes[1], color=["tab:blue", "tab:red"])
+    pivot_rmse.plot(kind="bar", ax=axes[1], color=[COLORS.get(c, "black") for c in pivot_rmse.columns])
     axes[1].set_title("portfolio vol tracking RMSE per fold")
     axes[1].set_ylabel("RMSE")
     axes[1].grid(True, alpha=0.3, axis="y")

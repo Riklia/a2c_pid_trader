@@ -27,6 +27,7 @@ from backtest.walk_forward import (
 )
 from backtest.engine import BacktestResult
 from control.a2c_pid import A2CPID
+from control.baselines import BuyAndHold
 from control.static_pid import StaticPID
 from data import loader, features
 from environment.trading_env import TradingEnv
@@ -172,6 +173,16 @@ def run(cfg_path: Path) -> None:
 
         traces_dir = run_dir / "traces"
         traces_dir.mkdir(exist_ok=True)
+
+        bh_metrics, bh_result = evaluate_on_test(
+            fold, BuyAndHold(), "buy_hold",
+            target_vol=target_vol, fee_rate=fee_rate, bars_per_year=bars_per_year,
+        )
+        all_metrics.append(bh_metrics)
+        print(f"  buy_hold:   return={bh_metrics.total_return:+.2%} "
+                f"sharpe={bh_metrics.sharpe:+.2f} "
+                f"dd={bh_metrics.max_drawdown:.2%}")
+        save_result(bh_result, traces_dir, fold.fold_id, "buy_hold")
 
         static_ctrl = make_static_pid(cfg)
         static_metrics, static_result = evaluate_on_test(
