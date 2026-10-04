@@ -34,5 +34,6 @@ streamlit run tools/env_viewer/app.py
 
 - [docs/overview.md](docs/overview.md): what the system does and how it's wired together
 - [docs/control_formulation.md](docs/control_formulation.md): the control-theory framing with the math
+- [docs/results.md](docs/results.md): what the experiments show and how to reproduce them
 - [docs/features.md](docs/features.md): which inputs the model uses, how they are normalized, how to add or remove one
 - [docs/debugging.md](docs/debugging.md): tools and workflows when something looks wrong
