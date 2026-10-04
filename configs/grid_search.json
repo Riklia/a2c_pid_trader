@@ -1,0 +1,16 @@
+{
+  "base_config": "configs/walk_forward.json",
+  "base_overrides": [
+    "a2c_pid.features=[{\"column\":\"realized_vol\"},{\"column\":\"vol_forecast\"},{\"column\":\"log_return\"},{\"column\":\"funding\"},{\"column\":\"mom_720h\"},{\"column\":\"mom_2160h\"}]"
+  ],
+  "tuning_folds": 5,
+  "tuning_seeds": [0],
+  "holdout_seeds": [0, 1, 2],
+  "objective": "sharpe",
+  "grid": {
+    "training.lr": [0.003, 0.01, 0.03],
+    "training.w_gain": [0.03, 0.3],
+    "training.w_return": [0.0, 1.0],
+    "a2c_pid.gain_bounds": [[0.5, 0.003, 20.0], [1.0, 0.006, 40.0]]
+  }
+}
