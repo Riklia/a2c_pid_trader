@@ -175,6 +175,7 @@ def make_folds(cfg: dict, data: pd.DataFrame) -> list[WalkForwardFold]:
         train_size=cfg["walk_forward"]["train_size"],
         test_size=cfg["walk_forward"]["test_size"],
         step_size=cfg["walk_forward"]["step_size"],
+        window=cfg["walk_forward"].get("window", "rolling"),
     )
 
 

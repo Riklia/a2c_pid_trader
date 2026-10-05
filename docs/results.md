@@ -135,6 +135,25 @@ Takeaways:
 - The defaults in `configs/walk_forward.json` were left unchanged so the
   tables above stay reproducible.
 
+## Training window: last year vs all past data (BTC, correct design)
+
+The walk-forward trains each fold on the year before its test quarter
+(`walk_forward.window = "rolling"`). The alternative, `"expanding"`, trains
+on all history from 2019 up to the test quarter (up to ~6× more data); the
+test quarters are identical. 1 seed each (seed 0 of the BTC run for rolling).
+
+| vs static PID, 21 quarters | rolling (1 year) | expanding (all past) |
+|---|---|---|
+| online A2C, Sharpe gain | +0.012 (13/21) | +0.015 (11/21) |
+| online A2C, return gain | +0.12 pp | +0.14 pp |
+| frozen A2C, Sharpe gain | +0.013 | −0.035 (CI includes 0) |
+| frozen A2C, max drawdown | ≈0 | slightly worse (CI excludes 0) |
+
+More history does not help: online A2C is the same either way (it adapts
+to the current market while trading), and frozen A2C gets slightly worse
+(older market behavior partly misleads it). Rolling stays the default; it
+is also ~6× cheaper to train.
+
 ## Caveats
 
 - Effects are modest in size (Sharpe +0.03 per quarter where significant).

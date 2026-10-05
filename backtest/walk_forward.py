@@ -40,8 +40,12 @@ def make_walk_forward_folds(
     train_size: int,
     test_size: int,
     step_size: int | None = None,
+    window: str = "rolling",
 ) -> list[WalkForwardFold]:
-    """Yields sliding train/test window pairs over an ordered dataset.
+    """Yields train/test window pairs over an ordered dataset.
+
+    The test windows are the same either way; `window` only decides how much
+    history each fold trains on, and training never reaches past the test start.
 
     Args:
         data: full feature table, DatetimeIndex, sorted ascending.
@@ -49,15 +53,21 @@ def make_walk_forward_folds(
         test_size: number of bars per test window.
         step_size: how far to slide between folds; defaults to test_size
             for non-overlapping test windows.
+        window: "rolling" trains on the last `train_size` bars before each
+            test window; "expanding" trains on everything from the start of
+            the data up to the test window (train_size is then the minimum).
     """
     if step_size is None:
         step_size = test_size
+    if window not in ("rolling", "expanding"):
+        raise ValueError(f"unknown window: {window}")
 
     folds = []
     fold_id = 0
     start = 0
     while start + train_size + test_size <= len(data):
-        train_data = data.iloc[start : start + train_size]
+        train_start = 0 if window == "expanding" else start
+        train_data = data.iloc[train_start : start + train_size]
         test_data = data.iloc[start + train_size : start + train_size + test_size]
         folds.append(WalkForwardFold(fold_id=fold_id, train_data=train_data, test_data=test_data))
         start += step_size

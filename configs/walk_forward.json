@@ -19,7 +19,8 @@
   "walk_forward": {
     "train_size": 8760,
     "test_size": 2160,
-    "step_size": 2160
+    "step_size": 2160,
+    "window": "rolling"
   },
   "controller": {
     "target_vol": 0.35,
