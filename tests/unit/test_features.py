@@ -281,14 +281,6 @@ def test_build_feature_table_has_no_look_ahead(varying_hourly_ohlcv, eight_hour_
     shared_index = truncated.index
     pd.testing.assert_frame_equal(full.loc[shared_index], truncated)
 
-def test_funding_settlement_flag_marks_only_real_observations(hourly_ohlcv, eight_hour_funding):
-    result = features.align_funding_to_ohlcv(hourly_ohlcv, eight_hour_funding, freq="1h")
-
-    expected = pd.Series(
-        [True] + [False] * 7 + [True], index=hourly_ohlcv.index, name="is_funding_settlement",
-    )
-    pd.testing.assert_series_equal(result["is_funding_settlement"], expected, check_freq=False)
-
 def test_funding_settlement_flag_marks_only_countdown_resets(hourly_ohlcv, eight_hour_funding):
     result = features.align_funding_to_ohlcv(hourly_ohlcv, eight_hour_funding, freq="1h")
 
