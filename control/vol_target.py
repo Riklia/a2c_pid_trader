@@ -62,8 +62,9 @@ class VolTargetLaw:
         target_vol: annualized portfolio vol to track.
         max_position: cap on absolute exposure, as a multiple of equity.
         integral_limit: cap on |e_int|, in bars of unit log error.
-        port_vol_window: bars of strategy returns used to measure portfolio vol.
-            The integral is frozen until this many returns are observed.
+        port_vol_window: invested (non-zero position) bars of strategy returns
+            used to measure portfolio vol. The integral is frozen until this
+            many invested returns are observed.
         bars_per_year: annualization factor for portfolio vol.
         direction_mode: "long_only", "trend_long_flat" (long when trend > 0,
             flat otherwise) or "trend_long_short" (sign of trend).
@@ -116,16 +117,20 @@ class VolTargetLaw:
         self._direction_age = self.direction_hold  # forces a fresh read on the first bar
 
     def portfolio_vol(self) -> float | None:
-        """Annualized vol of recent strategy returns, None until the window is full."""
+        """Annualized vol of recent invested strategy returns, None until the window is full."""
         if len(self._returns) < self.port_vol_window:
             return None
         arr = np.fromiter(self._returns, dtype=np.float64, count=len(self._returns))
         return float(arr.std(ddof=1) * math.sqrt(self.bars_per_year))
 
     def begin_step(self, state: pd.Series) -> StepContext:
-        """Books the return the last position earned on this bar, returns the step context."""
+        """Books the return the last invested position earned on this bar, returns the step context.
+
+        Flat bars (where _last_position == 0) are skipped so flat stretches neither
+        dilute portfolio_vol with zeros nor wind up the integral upon re-entry.
+        """
         log_return = float(state["log_return"])
-        if math.isfinite(log_return):
+        if self._last_position != 0.0 and math.isfinite(log_return):
             self._returns.append(self._last_position * math.expm1(log_return))
 
         e = math.log(self.target_vol / float(state["vol_forecast"]))
@@ -133,7 +138,10 @@ class VolTargetLaw:
         self._e_prev = e
 
         port_vol = self.portfolio_vol()
-        feedback_error = 0.0 if not port_vol else math.log(self.target_vol / port_vol)
+        if self._last_position != 0.0 and port_vol:
+            feedback_error = math.log(self.target_vol / port_vol)
+        else:
+            feedback_error = 0.0
 
         return StepContext(
             direction=self._next_direction(state),

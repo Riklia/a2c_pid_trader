@@ -56,12 +56,12 @@ def test_tensor_and_float_paths_agree():
 def test_integral_stays_off_until_portfolio_vol_window_is_full():
     law = VolTargetLaw(target_vol=0.25, port_vol_window=5)
     rng = np.random.default_rng(0)
-    for _ in range(4):
+    for _ in range(5):
         ctx = law.begin_step(_state(log_return=rng.normal(0, 0.01)))
         assert ctx.feedback_error == 0.0
         assert ctx.errors.e_int == 0.0
         law.commit(ctx, 1.0, 0.01, 0.0)
-    # fifth booked return fills the window
+    # bar 0 had _last_position=0, so the fifth invested return arrives on bar 5
     ctx = law.begin_step(_state(log_return=rng.normal(0, 0.01)))
     assert ctx.feedback_error != 0.0
 
@@ -184,3 +184,57 @@ def test_reset_forces_a_fresh_direction_read():
 def test_trend_column_is_configurable():
     law = VolTargetLaw(target_vol=0.5, direction_mode="trend_long_flat", trend_column="mom_720h")
     assert "mom_720h" in law.required_fields
+
+
+def test_flat_bars_do_not_fill_warmup_window():
+    law = VolTargetLaw(target_vol=0.25, port_vol_window=5, direction_mode="trend_long_flat")
+    rng = np.random.default_rng(1)
+    for _ in range(10):
+        ctx = law.begin_step(_state(log_return=rng.normal(0, 0.01), trend=-1.0))
+        assert ctx.feedback_error == 0.0
+        assert law.portfolio_vol() is None
+        assert law.commit(ctx, 1.0, 0.01, 0.0) == 0.0
+
+
+def test_flat_periods_do_not_dilute_portfolio_vol_or_wind_up_integral():
+    true_vol, target = 0.25, 0.25
+    law = VolTargetLaw(
+        target_vol=target,
+        port_vol_window=20,
+        direction_mode="trend_long_flat",
+        max_position=2.0,
+    )
+    rng = np.random.default_rng(7)
+    bar_vol = true_vol / math.sqrt(8760)
+
+    for _ in range(100):
+        ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=1.0))
+        law.commit(ctx, 1.0, 0.01, 0.0)
+
+    # First bar with trend=-1.0 still settles the last invested bar's return, then goes flat
+    ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=-1.0))
+    assert law.commit(ctx, 1.0, 0.01, 0.0) == 0.0
+    port_vol_before = law.portfolio_vol()
+    e_int_before = law._e_int
+    assert port_vol_before is not None
+
+    # Subsequent flat bars must leave portfolio_vol and e_int untouched
+    for _ in range(100):
+        ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=-1.0))
+        assert ctx.feedback_error == 0.0
+        assert law.portfolio_vol() == pytest.approx(port_vol_before)
+        assert ctx.errors.e_int == pytest.approx(e_int_before)
+        assert law.commit(ctx, 1.0, 0.01, 0.0) == 0.0
+
+    # Re-entry bar must not re-integrate stale portfolio_vol before earning an invested return
+    ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=1.0))
+    assert ctx.feedback_error == 0.0
+    assert law.portfolio_vol() == pytest.approx(port_vol_before)
+    assert ctx.errors.e_int == pytest.approx(e_int_before)
+    law.commit(ctx, 1.0, 0.01, 0.0)
+
+    # After resuming invested trading, e_int stays modest rather than winding up
+    for _ in range(50):
+        ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=1.0))
+        law.commit(ctx, 1.0, 0.01, 0.0)
+    assert abs(law._e_int) < 20.0
