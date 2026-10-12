@@ -65,3 +65,15 @@ def test_warmup_cannot_exceed_window():
 def test_warmup_below_two_rejected():
     with pytest.raises(ValueError, match="at least 2"):
         RollingZScoreScaler(feature_names=["x"], window_size=100, warmup_size=1)
+
+
+def test_transform_value_matches_transform_across_lifecycle():
+    s1 = RollingZScoreScaler(feature_names=["x"], window_size=4, warmup_size=2)
+    s2 = RollingZScoreScaler(feature_names=["x"], window_size=4, warmup_size=2)
+    values = [10.0, 2.0, 5.0, 8.0, 12.0, 1.0]
+    for v in values:
+        assert s1.transform_value("x", v) == pytest.approx(s2.transform(pd.Series({"x": v}))["x"])
+    s1.reset()
+    s2.reset()
+    for v in [3.0, 6.0]:
+        assert s1.transform_value("x", v) == pytest.approx(s2.transform(pd.Series({"x": v}))["x"])

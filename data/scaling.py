@@ -1,5 +1,3 @@
-from collections import deque
-
 import numpy as np
 import pandas as pd
 
@@ -40,29 +38,41 @@ class RollingZScoreScaler:
         self.window_size = window_size
         self.warmup_size = warmup_size
         self.eps = eps
-        self._windows: dict[str, deque[float]] = {
-            name: deque(maxlen=window_size) for name in self.feature_names
+        self._buffers: dict[str, np.ndarray] = {
+            name: np.empty(window_size, dtype=np.float64) for name in self.feature_names
         }
+        self._counts: dict[str, int] = {name: 0 for name in self.feature_names}
+        self._pos: dict[str, int] = {name: 0 for name in self.feature_names}
+
+    def transform_value(self, name: str, value: float) -> float:
+        """Updates rolling stats for `name` with `value` and returns its z-score."""
+        val = float(value)
+        buf = self._buffers[name]
+        pos = self._pos[name]
+        buf[pos] = val
+        self._pos[name] = (pos + 1) % self.window_size
+        count = self._counts[name]
+        if count < self.window_size:
+            count += 1
+            self._counts[name] = count
+
+        if count < self.warmup_size:
+            return 0.0
+
+        view = buf if count == self.window_size else buf[:count]
+        mean = float(view.mean())
+        std = float(view.std(ddof=1))
+        return (val - mean) / (std + self.eps)
 
     def transform(self, sample: pd.Series) -> pd.Series:
         """Updates rolling stats with `sample` and returns a standardized copy."""
         result = sample.copy()
         for name in self.feature_names:
-            value = float(sample[name])
-            window = self._windows[name]
-            window.append(value)
-
-            if len(window) < self.warmup_size:
-                result[name] = 0.0
-                continue
-
-            arr = np.fromiter(window, dtype=np.float64, count=len(window))
-            mean = arr.mean()
-            std = arr.std(ddof=1)
-            result[name] = (value - mean) / (std + self.eps)
+            result[name] = self.transform_value(name, float(sample[name]))
         return result
 
     def reset(self) -> None:
         """Clears all rolling windows."""
-        for window in self._windows.values():
-            window.clear()
+        for name in self.feature_names:
+            self._counts[name] = 0
+            self._pos[name] = 0
