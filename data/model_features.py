@@ -42,6 +42,12 @@ COLUMN_DESCRIPTIONS = {
     "funding": "last funding rate known at the bar's close, 0 before funding history starts",
     "vol_forecast": "annualized std of hourly log returns over controller.forecast_vol_window, "
                     "the volatility the control law sizes positions with",
+    "log_vol_forecast": "log(vol_forecast), captures volatility level and mean reversion",
+    "parkinson_vol": "annualized high-low range Parkinson volatility over features.vol_window",
+    "vol_ratio": "log(parkinson_vol / vol_forecast), fast-to-slow volatility ratio",
+    "downside_vol": "annualized negative-return semi-volatility over features.vol_window",
+    "downside_share": "downside_vol / (downside_vol + upside_vol), directional vol asymmetry",
+    "hl_range": "log(high / low) bar range",
     "trend": "close / mean close over controller.trend_window - 1",
     # not part of any feature table: added by attach_cross_asset_features
     AVAILABLE: "1 if this symbol has a value for the bar, else 0 (cross-asset only, added automatically)",
@@ -208,6 +214,7 @@ class FeatureNormalizer:
 
     def __init__(self, specs: list[FeatureSpec] | tuple[FeatureSpec, ...], window: int = 500, warmup: int = 50):
         self.specs = list(specs)
+        self._name_set = set(self.names)
         # one scaler per feature, so a missing value can skip just its own update
         self._scalers = {
             spec.name: RollingZScoreScaler([spec.name], window_size=window, warmup_size=warmup)
@@ -222,7 +229,7 @@ class FeatureNormalizer:
         return len(self.specs)
 
     def transform(self, state: pd.Series) -> np.ndarray:
-        require_columns(state, set(self.names), "FeatureNormalizer.transform")
+        require_columns(state, self._name_set, "FeatureNormalizer.transform")
         out = np.zeros(len(self.specs), dtype=np.float64)
         for i, spec in enumerate(self.specs):
             value = float(state[spec.name])
@@ -231,8 +238,7 @@ class FeatureNormalizer:
             if spec.norm == "none":
                 out[i] = value
             else:
-                scaled = self._scalers[spec.name].transform(pd.Series({spec.name: value}))
-                out[i] = float(scaled[spec.name])
+                out[i] = self._scalers[spec.name].transform_value(spec.name, value)
         return out
 
     def reset(self) -> None:

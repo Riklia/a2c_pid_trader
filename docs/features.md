@@ -19,9 +19,11 @@ The walk-forward script prints the same table at the start of every run.
 
 Every symbol gets the same feature table, built from its minute candles and
 funding snapshots by `data.features.build_feature_table` and cached under
-`.cache/features/`; the sizing columns (`vol_forecast`, `trend`, `mom_*`)
-are added on top by `data.features.add_sizing_features`. Its columns usable as model features are listed, with how
-each is computed, in `COLUMN_DESCRIPTIONS` in
+`.cache/features/`; the sizing and fast range/semi-volatility columns
+(`vol_forecast`, `log_vol_forecast`, `trend`, `mom_*`, `parkinson_vol`,
+`vol_ratio`, `downside_vol`, `downside_share`, `hl_range`) are added on top
+by `data.features.add_sizing_features`. Its columns usable as model features
+are listed, with how each is computed, in `COLUMN_DESCRIPTIONS` in
 [data/model_features.py](../data/model_features.py):
 
 | Column | Computed as |
@@ -33,6 +35,12 @@ each is computed, in `COLUMN_DESCRIPTIONS` in
 | `e_d` | one-bar change of `e_p` |
 | `funding` | last funding rate known at the bar's close, 0 before funding history starts |
 | `vol_forecast` | annualized std of hourly log returns over `controller.forecast_vol_window`, what the law sizes with |
+| `log_vol_forecast` | `log(vol_forecast)`, captures volatility level and mean reversion |
+| `parkinson_vol` | annualized high-low range Parkinson volatility over `features.vol_window` |
+| `vol_ratio` | `log(parkinson_vol / vol_forecast)`, fast-to-slow volatility ratio |
+| `downside_vol` | annualized negative-return semi-volatility over `features.vol_window` |
+| `downside_share` | `downside_vol / (downside_vol + upside_vol)`, directional vol asymmetry |
+| `hl_range` | `log(high / low)` bar range |
 | `trend` | close / mean close over `controller.trend_window` − 1 |
 | `mom_<window>` | log return over the last `<window>`, one column per `controller.momentum_windows` entry |
 | `available` | other symbols only, added automatically under the `fill` policy: 1 if the symbol has a value for the bar, else 0 |

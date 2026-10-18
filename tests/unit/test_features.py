@@ -354,3 +354,15 @@ def test_momentum_columns_are_lagged_log_returns(varying_hourly_ohlcv):
     close = varying_hourly_ohlcv["close"]
     expected = np.log(close / close.shift(2)).loc[result.index]
     pd.testing.assert_series_equal(result["mom_2h"], expected, check_names=False)
+
+
+def test_fast_vol_sizing_features_are_causal_and_complete(varying_hourly_ohlcv):
+    kwargs = dict(freq="1h", forecast_vol_window="3h", fast_vol_window="3h")
+    full = features.add_sizing_features(varying_hourly_ohlcv, **kwargs)
+    expected_cols = {"parkinson_vol", "vol_ratio", "downside_vol", "downside_share", "log_vol_forecast", "hl_range"}
+    assert expected_cols.issubset(full.columns)
+    assert not full[list(expected_cols)].isna().any().any()
+
+    cutoff = pd.Timestamp("2024-01-01 06:00")
+    truncated = features.add_sizing_features(varying_hourly_ohlcv[varying_hourly_ohlcv.index <= cutoff], **kwargs)
+    pd.testing.assert_frame_equal(full.loc[truncated.index], truncated)

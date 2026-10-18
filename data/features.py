@@ -117,26 +117,32 @@ def add_sizing_features(
     forecast_vol_window: str = FORECAST_VOL_WINDOW,
     trend_window: str | None = None,
     momentum_windows: tuple[str, ...] = (),
+    fast_vol_window: str | None = None,
 ) -> pd.DataFrame:
     """Adds the columns the vol-targeting controllers size positions from.
 
     Kept separate from build_feature_table so they can be derived from a
-    cached table without reloading raw data. Both columns only use data up
+    cached table without reloading raw data. All columns only use data up
     to each bar's close.
 
     Columns added:
         vol_forecast: annualized realized vol over forecast_vol_window. Slower
             and less noisy than realized_vol, so sizing on it keeps turnover low.
+        log_vol_forecast: log(vol_forecast), captures volatility level and mean reversion.
         trend: close / rolling mean of close over trend_window, minus 1. Only
             added when trend_window is given.
         mom_<window>: log return over the last <window> (time-series
             momentum), one column per entry of momentum_windows.
+        downside_vol, downside_share, parkinson_vol, vol_ratio, hl_range:
+            added when fast_vol_window is given (high-SNR range & semi-vol).
 
     Rows where any added column is still warming up are dropped.
     """
     log_returns = compute_log_returns(table)
+    vol_forecast = compute_realized_vol(log_returns, freq=freq, window=forecast_vol_window)
     out = table.assign(
-        vol_forecast=compute_realized_vol(log_returns, freq=freq, window=forecast_vol_window)
+        vol_forecast=vol_forecast,
+        log_vol_forecast=np.log(vol_forecast.clip(lower=1e-8)),
     )
     if trend_window is not None:
         min_periods = _window_bar_count(freq, trend_window)
@@ -147,6 +153,29 @@ def add_sizing_features(
         lag = _window_bar_count(freq, window)
         out[f"mom_{window}"] = np.log(out["close"] / out["close"].shift(lag))
         added.append(f"mom_{window}")
+
+    if fast_vol_window is not None:
+        fast_n = _window_bar_count(freq, fast_vol_window)
+        bpy = _bars_per_year(freq)
+        downside_vol = np.sqrt((log_returns.clip(upper=0.0) ** 2).rolling(fast_vol_window, min_periods=fast_n).mean() * bpy)
+        upside_vol = np.sqrt((log_returns.clip(lower=0.0) ** 2).rolling(fast_vol_window, min_periods=fast_n).mean() * bpy)
+        out["downside_vol"] = downside_vol
+        out["downside_share"] = downside_vol / (downside_vol + upside_vol + 1e-8)
+        added.extend(["downside_vol", "downside_share"])
+
+        if "high" in out.columns and "low" in out.columns:
+            hl_range = np.log((out["high"] / out["low"]).clip(lower=1.0))
+            park_var = (hl_range ** 2) / (4.0 * np.log(2.0))
+            parkinson_vol = np.sqrt(park_var.rolling(fast_vol_window, min_periods=fast_n).mean() * bpy)
+            out["hl_range"] = hl_range
+            out["parkinson_vol"] = parkinson_vol
+            out["vol_ratio"] = np.log(parkinson_vol.clip(lower=1e-8) / out["vol_forecast"].clip(lower=1e-8))
+            added.extend(["hl_range", "parkinson_vol", "vol_ratio"])
+        else:
+            fast_cc = compute_realized_vol(log_returns, freq=freq, window=fast_vol_window)
+            out["vol_ratio"] = np.log(fast_cc.clip(lower=1e-8) / out["vol_forecast"].clip(lower=1e-8))
+            added.append("vol_ratio")
+
     return out.dropna(subset=added)
 
 
