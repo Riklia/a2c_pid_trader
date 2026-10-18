@@ -69,3 +69,19 @@ def test_online_adapts_to_a_forecast_bias_that_appears_after_training():
     late = slice(-1000, None)
     vol = lambda r: r.rewards.iloc[late].std() * np.sqrt(8760)
     assert abs(vol(online) - 0.25) < 0.5 * abs(vol(frozen) - 0.25)
+
+
+def test_online_accepts_and_advances_carried_optimizer_state():
+    data = make_market(n=100, seed=7)
+    ctrl = _controller(seed=7)
+    cfg = TrainConfig(lr=1e-2, update_every=24)
+    opt = torch.optim.Adam(ctrl.pid_net.parameters(), lr=cfg.lr)
+
+    run_online(TradingEnv(data.iloc[:50], fee_rate=0.0, max_position=2.0), ctrl, cfg, optimizer=opt)
+    first_param = next(iter(ctrl.pid_net.parameters()))
+    steps_after_train = int(opt.state[first_param]["step"].item())
+    assert steps_after_train > 0
+
+    run_online(TradingEnv(data.iloc[50:], fee_rate=0.0, max_position=2.0), ctrl, cfg, optimizer=opt)
+    steps_after_online = int(opt.state[first_param]["step"].item())
+    assert steps_after_online > steps_after_train

@@ -43,6 +43,7 @@
     "gain_bounds": [0.5, 0.003, 20.0],
     "seeds": [0, 1, 2],
     "evaluate_online": true,
+    "gain_hold": 1,
     "cross_asset_missing": "fill",
     "features": [
       {"column": "realized_vol", "norm": "zscore"},
@@ -67,6 +68,7 @@
     "w_track": 1.0,
     "risk_aversion": 2.0,
     "w_gain": 0.1,
+    "downside_weight": 1.0,
     "update_every": 24,
     "grad_clip": 1.0,
     "epochs": 1

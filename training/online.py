@@ -11,6 +11,7 @@ decision ever depends on a return that has not happened yet.
 """
 import numpy as np
 import pandas as pd
+import torch
 
 from backtest.engine import BacktestResult
 from control.a2c_pid import A2CPID
@@ -18,7 +19,12 @@ from environment.trading_env import TradingEnv
 from training.train_loop import TrainConfig, train_one_pass
 
 
-def run_online(env: TradingEnv, controller: A2CPID, config: TrainConfig) -> BacktestResult:
+def run_online(
+    env: TradingEnv,
+    controller: A2CPID,
+    config: TrainConfig,
+    optimizer: torch.optim.Optimizer | None = None,
+) -> BacktestResult:
     """Trades `env` once while updating `controller` online, returns the realized result.
 
     `config.epochs` is forced to 1: a second pass would trade the same bars
@@ -26,7 +32,7 @@ def run_online(env: TradingEnv, controller: A2CPID, config: TrainConfig) -> Back
     """
     if config.epochs != 1:
         config = TrainConfig(**{**config.__dict__, "epochs": 1})
-    reports = train_one_pass(env, controller, config)
+    reports = train_one_pass(env, controller, config, optimizer=optimizer)
 
     index = env.data.index[: len(env.equity_curve)]
     equity = pd.Series(env.equity_curve, index=index, name="equity")

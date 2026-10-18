@@ -109,3 +109,17 @@ def test_builder_output_feeds_net_correctly():
     gains = net(builder.build(_errors(), 100.0, FEATURES))
     assert gains.shape == (3,)
     assert not torch.isnan(gains).any()
+
+
+def test_four_output_net_supports_bias_and_bounds():
+    net = PIDNet(input_size=4, gain_bounds=(0.5, 0.003, 20.0, 0.4))
+    assert net.output_size == 4
+    assert net.has_bias is True
+    out = net(torch.ones(4) * 100.0)
+    assert out.shape == (4,)
+    assert (out.abs() <= torch.tensor([0.5, 0.003, 20.0, 0.4]) + 1e-6).all()
+
+
+def test_invalid_gain_bounds_length_rejected():
+    with pytest.raises(ValueError, match="length 3/4"):
+        PIDNet(input_size=4, gain_bounds=(0.5, 0.5))

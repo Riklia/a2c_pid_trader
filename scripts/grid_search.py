@@ -90,10 +90,11 @@ def a2c_task(args: tuple[int, dict, int, int]) -> dict:
     fold = _W["folds"][fold_id]
     ctrl = wf.make_a2c_pid(cfg, seed=fold_id * 1000 + seed)
     train_cfg = wf.make_train_config(cfg)
+    opt = torch.optim.Adam(ctrl.pid_net.parameters(), lr=train_cfg.lr)
     train_env = TradingEnv(fold.train_data, fee_rate=cfg["env"]["fee_rate"], max_position=cfg["env"]["max_position"])
-    train_one_pass(train_env, ctrl, train_cfg)
+    train_one_pass(train_env, ctrl, train_cfg, optimizer=opt)
     m, _ = evaluate_on_test(fold, ctrl, "a2c_online", seed=seed, **_eval_kwargs(cfg),
-                            runner=lambda env, c: run_online(env, c, train_cfg))
+                            runner=lambda env, c: run_online(env, c, train_cfg, optimizer=opt))
     return {"point_id": point_id, "fold_id": fold_id, "seed": seed,
             **{k: getattr(m, k) for k in ("sharpe", "total_return", "max_drawdown")}}
 

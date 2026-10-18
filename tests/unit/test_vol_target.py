@@ -238,3 +238,32 @@ def test_flat_periods_do_not_dilute_portfolio_vol_or_wind_up_integral():
         ctx = law.begin_step(_state(log_return=rng.normal(0, bar_vol), vol_forecast=true_vol, trend=1.0))
         law.commit(ctx, 1.0, 0.01, 0.0)
     assert abs(law._e_int) < 20.0
+
+
+def test_bias_shifts_log_exposure_multiplicatively():
+    law = VolTargetLaw(target_vol=0.25, max_position=2.0)
+    ctx = law.begin_step(_state(vol_forecast=0.5))
+    pos = law.commit(ctx, kp=1.0, ki=0.0, kd=0.0, bias=math.log(1.5))
+    assert pos == pytest.approx(0.5 * 1.5)
+
+
+def test_anti_windup_clamp_keeps_inward_gradient_at_saturation():
+    law = VolTargetLaw(target_vol=0.5, max_position=1.0)
+    ctx = law.begin_step(_state(vol_forecast=0.25))  # base exposure = 2.0 > max_position
+
+    # Loss wanting smaller exposure (0.5) must propagate positive gradient to kp/bias
+    kp_down = torch.tensor(1.0, requires_grad=True)
+    bias_down = torch.tensor(0.0, requires_grad=True)
+    pos_down = law.position(ctx, kp_down, 0.0, 0.0, bias=bias_down)
+    assert pos_down.item() == pytest.approx(1.0)
+    ((pos_down - 0.5) ** 2).backward()
+    assert bias_down.grad.item() > 0.0
+    assert kp_down.grad.item() > 0.0
+
+    # Loss wanting even larger exposure (2.0) must be blocked at saturation
+    kp_up = torch.tensor(1.0, requires_grad=True)
+    bias_up = torch.tensor(0.0, requires_grad=True)
+    pos_up = law.position(ctx, kp_up, 0.0, 0.0, bias=bias_up)
+    ((pos_up - 2.0) ** 2).backward()
+    assert bias_up.grad.item() == 0.0
+    assert kp_up.grad.item() == 0.0

@@ -40,6 +40,26 @@ def _clip(x, low: float, high: float):
     return min(max(x, low), high)
 
 
+class _AntiWindupClamp(torch.autograd.Function):
+    """Clamps exposure to [0, max_val] while keeping gradients that push back inside bounds."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor, max_val: float) -> torch.Tensor:
+        ctx.save_for_backward(x)
+        ctx.max_val = max_val
+        return x.clamp(0.0, max_val)
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        (x,) = ctx.saved_tensors
+        keep = (
+            ((x >= 0.0) & (x <= ctx.max_val))
+            | ((x > ctx.max_val) & (grad_output > 0.0))
+            | ((x < 0.0) & (grad_output < 0.0))
+        )
+        return torch.where(keep, grad_output, torch.zeros_like(grad_output)), None
+
+
 @dataclass
 class VolTargetLaw:
     """Log-space PID volatility targeting, split into direction and size.
@@ -149,18 +169,20 @@ class VolTargetLaw:
             feedback_error=feedback_error,
         )
 
-    def log_exposure(self, ctx: StepContext, kp, ki, kd):
+    def log_exposure(self, ctx: StepContext, kp, ki, kd, bias=0.0):
         """PID output before exp and clipping, float or tensor depending on gains."""
         err = ctx.errors
-        return kp * err.e + ki * err.e_int + kd * err.e_d
+        return kp * err.e + ki * err.e_int + kd * err.e_d + bias
 
-    def position(self, ctx: StepContext, kp, ki, kd):
+    def position(self, ctx: StepContext, kp, ki, kd, bias=0.0):
         """Pure: the position these gains produce. Differentiable for tensor gains."""
-        log_exp = self.log_exposure(ctx, kp, ki, kd)
-        exposure = torch.exp(log_exp) if isinstance(log_exp, torch.Tensor) else math.exp(log_exp)
-        return ctx.direction * _clip(exposure, 0.0, self.max_position)
+        log_exp = self.log_exposure(ctx, kp, ki, kd, bias=bias)
+        if isinstance(log_exp, torch.Tensor):
+            exposure = _AntiWindupClamp.apply(torch.exp(log_exp), self.max_position)
+            return ctx.direction * exposure
+        return ctx.direction * _clip(math.exp(log_exp), 0.0, self.max_position)
 
-    def commit(self, ctx: StepContext, kp: float, ki: float, kd: float) -> float:
+    def commit(self, ctx: StepContext, kp: float, ki: float, kd: float, bias: float = 0.0) -> float:
         """Returns the position for these gains and advances the integral and position state.
 
         Anti-windup by conditional integration: when exposure is pinned at
@@ -168,7 +190,7 @@ class VolTargetLaw:
         is not accumulated. Otherwise e_int would keep growing during long
         calm stretches and overshoot once vol picks up.
         """
-        position = float(self.position(ctx, kp, ki, kd))
+        position = float(self.position(ctx, kp, ki, kd, bias=bias))
 
         fb = ctx.feedback_error
         saturated = abs(position) >= self.max_position

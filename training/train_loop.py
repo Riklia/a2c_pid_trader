@@ -39,6 +39,7 @@ class TrainConfig:
     w_track: float = 1.0
     risk_aversion: float = 2.0
     w_gain: float = 1.0
+    downside_weight: float = 1.0
     update_every: int = 24
     grad_clip: float = 1.0
     epochs: int = 1
@@ -55,6 +56,7 @@ class StepReport:
     kp: float
     ki: float
     kd: float
+    bias: float = 0.0
     asset: str = ""
 
 
@@ -63,18 +65,20 @@ def train_one_pass(
     controller: A2CPID,
     config: TrainConfig,
     on_step: Callable[[StepReport], None] | None = None,
+    optimizer: torch.optim.Optimizer | None = None,
 ) -> list[StepReport]:
     """Runs the controller through the env `config.epochs` times, updating pid_net online.
 
     Single-asset case of train_interleaved, see there for the details.
     """
-    return train_interleaved({"": (env, controller)}, config, on_step=on_step)
+    return train_interleaved({"": (env, controller)}, config, on_step=on_step, optimizer=optimizer)
 
 
 def train_interleaved(
     streams: dict[str, tuple[TradingEnv, A2CPID]],
     config: TrainConfig,
     on_step: Callable[[StepReport], None] | None = None,
+    optimizer: torch.optim.Optimizer | None = None,
 ) -> list[StepReport]:
     """Trains one shared pid_net on several assets at once, walking them in calendar order.
 
@@ -104,7 +108,8 @@ def train_interleaved(
         raise ValueError("all controllers in train_interleaved must share one pid_net")
     pid_net = next(iter(streams.values()))[1].pid_net
 
-    optimizer = torch.optim.Adam(pid_net.parameters(), lr=config.lr)
+    if optimizer is None:
+        optimizer = torch.optim.Adam(pid_net.parameters(), lr=config.lr)
     # a decision is taken on every bar except each env's last one
     timeline = sorted(set().union(*(env.data.index[:-1] for env, _ in streams.values())))
     reports: list[StepReport] = []
@@ -166,9 +171,12 @@ def _train_step(
     if config.w_track and action != 0.0:
         step_loss = step_loss + config.w_track * vol_tracking_loss(
             position, simple_return, controller.law.target_vol, config.bars_per_year,
+            downside_weight=config.downside_weight,
         )
 
-    kp_d, ki_d, kd_d = (float(g) for g in dyn_gains.detach())
+    dyn_vals = [float(g) for g in dyn_gains.detach()]
+    kp_d, ki_d, kd_d = dyn_vals[0], dyn_vals[1], dyn_vals[2]
+    bias_d = dyn_vals[3] if len(dyn_vals) == 4 else 0.0
     report = StepReport(
         step=env.current_step,
         ts=next_state.name,
@@ -178,6 +186,7 @@ def _train_step(
         kp=controller.static_pid.kp + kp_d,
         ki=controller.static_pid.ki + ki_d,
         kd=controller.static_pid.kd + kd_d,
+        bias=bias_d,
         asset=asset,
     )
     return step_loss, report

@@ -35,22 +35,31 @@ def trading_costs(
 
 def vol_tracking_loss(
     position: torch.Tensor,
-    simple_return: float,
+    simple_return: float | torch.Tensor,
     target_vol: float,
     bars_per_year: float,
+    downside_weight: float = 1.0,
 ) -> torch.Tensor:
     """QLIKE loss for tracking target_vol with exposure |position|.
 
-        L = (u * r)^2 * bars_per_year / target_vol^2 - log(u^2)
+        L = w * (u * r)^2 * bars_per_year / target_vol^2 - log(u^2)
 
-    In expectation L is minimized exactly at |u| = target_vol / sigma, where
-    sigma is the true annualized vol of the bar. Unlike a squared error on
-    (|u| * sigma - target), it needs no vol estimate as a label: the realized
-    squared return is an unbiased variance sample. Vol is far more predictable
-    than returns, so this term has a much higher signal-to-noise ratio than
-    the utility. Undefined at u = 0; callers skip flat bars.
+    In expectation under symmetric returns with downside_weight=1 (or any
+    symmetric zero-mean distribution for downside_weight in (0, 2)), L is
+    minimized at |u| = target_vol / sigma, where sigma is the true annualized
+    vol of the bar. Setting downside_weight > 1 weights losing bars by
+    downside_weight and winning bars by (2 - downside_weight), prioritizing
+    crash-volatility avoidance over upside clipping. Undefined at u = 0;
+    callers skip flat bars.
     """
-    variance_ratio = (position * simple_return) ** 2 * bars_per_year / target_vol ** 2
+    if not (0.0 < downside_weight < 2.0):
+        raise ValueError("downside_weight must be in (0, 2)")
+    pnl = position * simple_return
+    if downside_weight == 1.0:
+        weight: float | torch.Tensor = 1.0
+    else:
+        weight = torch.where(pnl.detach() < 0.0, downside_weight, 2.0 - downside_weight)
+    variance_ratio = weight * (pnl ** 2) * bars_per_year / target_vol ** 2
     return variance_ratio - torch.log(position ** 2)
 
 

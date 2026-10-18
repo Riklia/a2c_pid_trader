@@ -147,6 +147,7 @@ def symbol_table(cfg: dict, symbol: str, verbose: bool = True) -> pd.DataFrame:
         forecast_vol_window=c["forecast_vol_window"],
         trend_window=c["trend_window"],
         momentum_windows=tuple(c["momentum_windows"]),
+        fast_vol_window=cfg["features"]["vol_window"],
     )
 
 
@@ -224,6 +225,7 @@ def make_a2c_pid(cfg: dict, seed: int) -> A2CPID:
             gain_bounds=tuple(cfg["a2c_pid"]["gain_bounds"]),
         ),
         normalizer=normalizer,
+        gain_hold=cfg["a2c_pid"].get("gain_hold", 1),
     )
 
 
@@ -295,17 +297,20 @@ def run_fold(fold_id: int, traces_dir: Path) -> tuple[list[FoldMetrics], list[st
 
     for seed in cfg["a2c_pid"]["seeds"]:
         a2c_ctrl = make_a2c_pid(cfg, seed=fold.fold_id * 1000 + seed)
+        train_cfg = make_train_config(cfg)
         train_env = TradingEnv(
             fold.train_data, fee_rate=cfg["env"]["fee_rate"], max_position=cfg["env"]["max_position"],
         )
-        train_one_pass(train_env, a2c_ctrl, make_train_config(cfg))
+        train_opt = torch.optim.Adam(a2c_ctrl.pid_net.parameters(), lr=train_cfg.lr)
+        train_one_pass(train_env, a2c_ctrl, train_cfg, optimizer=train_opt)
         # copy first: the frozen backtest advances the controller's normalization state
         online_ctrl = copy.deepcopy(a2c_ctrl) if cfg["a2c_pid"]["evaluate_online"] else None
         evaluate(a2c_ctrl, "a2c_pid", seed=seed)
         if online_ctrl is not None:
-            train_cfg = make_train_config(cfg)
+            online_opt = torch.optim.Adam(online_ctrl.pid_net.parameters(), lr=train_cfg.lr)
+            online_opt.load_state_dict(copy.deepcopy(train_opt.state_dict()))
             evaluate(online_ctrl, "a2c_online", seed=seed,
-                     runner=lambda env, ctrl: run_online(env, ctrl, train_cfg))
+                     runner=lambda env, ctrl: run_online(env, ctrl, train_cfg, optimizer=online_opt))
 
     return metrics, lines
 

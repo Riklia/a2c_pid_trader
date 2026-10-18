@@ -18,36 +18,47 @@ class PIDNet(nn.Module):
         f - the normalized model features configured in a2c_pid.features,
             see data.model_features
 
-    Output: [Kp_dyn, Ki_dyn, Kd_dyn], each in [-bound, +bound], produced by
-    tanh scaled by `gain_bounds`. These are meant to be added to static
-    gains from StaticPID, not to replace them.
+    Output: [Kp_dyn, Ki_dyn, Kd_dyn] or [Kp_dyn, Ki_dyn, Kd_dyn, bias_dyn],
+    each in [-bound, +bound], produced by tanh scaled by `gain_bounds`.
+    The three gains are added to static gains from StaticPID; the optional
+    fourth output is a feedforward log-exposure bias.
 
     Args:
         input_size: PIDNetInputBuilder.input_size(n_features). The default
             matches DEFAULT_FEATURES.
         hidden_sizes: sizes of the hidden layers, all with sigmoid activation
             per the paper's Fig. 2.
-        gain_bounds: absolute cap on each dynamic gain, either one value for
-            all three or a (kp, ki, kd) triple, since the gains live on very
-            different scales. Tanh output is scaled by this before returning.
+        gain_bounds: absolute cap on each dynamic output, either one value for
+            all three gains, a (kp, ki, kd) triple, or a (kp, ki, kd, bias)
+            4-tuple. Tanh output is scaled by this before returning.
     """
 
-    # Kp_dyn, Ki_dyn, Kd_dyn
+    # Default output count when gain_bounds is scalar
     OUTPUT_SIZE = 3
 
     def __init__(
             self,
             input_size: int | None = None,
             hidden_sizes: tuple[int, ...] = (32, 32),
-            gain_bounds: float | tuple[float, float, float] = 1.0,
+            gain_bounds: float | tuple[float, ...] = 1.0,
     ):
         super().__init__()
         if input_size is None:
             input_size = PIDNetInputBuilder.input_size(len(DEFAULT_FEATURES))
         self.input_size = input_size
-        bounds = torch.as_tensor(gain_bounds, dtype=torch.float32).expand(self.OUTPUT_SIZE).clone()
+        bounds = torch.as_tensor(gain_bounds, dtype=torch.float32)
+        if bounds.ndim == 0:
+            bounds = bounds.expand(self.OUTPUT_SIZE).clone()
+        elif bounds.ndim != 1 or bounds.shape[0] not in (3, 4):
+            raise ValueError(
+                f"gain_bounds must be a scalar or length 3/4 sequence, got shape {tuple(bounds.shape)}"
+            )
+        else:
+            bounds = bounds.clone()
         if (bounds <= 0).any():
             raise ValueError("gain_bounds must be positive")
+        self.output_size = int(bounds.shape[0])
+        self.has_bias = self.output_size == 4
 
         layers: list[nn.Module] = []
         prev = self.input_size
@@ -55,7 +66,7 @@ class PIDNet(nn.Module):
             layers.append(nn.Linear(prev, size))
             layers.append(nn.Sigmoid())
             prev = size
-        layers.append(nn.Linear(prev, self.OUTPUT_SIZE))
+        layers.append(nn.Linear(prev, self.output_size))
         layers.append(nn.Tanh())
 
         self.net = nn.Sequential(*layers)

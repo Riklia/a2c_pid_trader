@@ -127,13 +127,16 @@ def run_case(args: tuple[str, int]) -> list[dict]:
     train, test = scenario(name, seed)
 
     a2c = make_a2c(cfg, seed)
-    run_online(TradingEnv(train, fee_rate=FEE), a2c, train_cfg)  # training pass
+    train_opt = torch.optim.Adam(a2c.pid_net.parameters(), lr=train_cfg.lr)
+    run_online(TradingEnv(train, fee_rate=FEE), a2c, train_cfg, optimizer=train_opt)  # training pass
     frozen, online = a2c, copy.deepcopy(a2c)
+    online_opt = torch.optim.Adam(online.pid_net.parameters(), lr=train_cfg.lr)
+    online_opt.load_state_dict(copy.deepcopy(train_opt.state_dict()))
 
     results = {
         "static_pid": run_backtest(TradingEnv(test, fee_rate=FEE), make_static()),
         "a2c_frozen": run_backtest(TradingEnv(test, fee_rate=FEE), frozen),
-        "a2c_online": run_online(TradingEnv(test, fee_rate=FEE), online, train_cfg),
+        "a2c_online": run_online(TradingEnv(test, fee_rate=FEE), online, train_cfg, optimizer=online_opt),
     }
     return [{"scenario": name, "seed": seed, "controller": c, **score(r)} for c, r in results.items()]
 

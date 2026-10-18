@@ -129,3 +129,62 @@ def test_act_is_pure_inference_no_gradient_captured():
     ctrl = _fresh_controller()
     ctrl.act(_state())
     assert not ctrl._last_pid_input.requires_grad
+
+
+def test_four_output_pid_net_flows_gradient_including_bias():
+    torch.manual_seed(0)
+    ctrl = A2CPID(
+        static_pid=StaticPID(law=VolTargetLaw(target_vol=0.25, max_position=2.0), kp=1.0),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(2), gain_bounds=(0.5, 0.003, 20.0, 0.5)),
+    )
+    action = ctrl.act(_state(vol_forecast=0.5))
+    position, dyn = ctrl.differentiable_action()
+    assert dyn.shape == (4,)
+    assert position.item() == pytest.approx(action, rel=1e-6)
+    position.backward()
+    grads = [p.grad for p in ctrl.pid_net.parameters()]
+    assert any(g is not None and g.abs().sum() > 0 for g in grads)
+
+
+def test_gain_hold_reuses_network_output_between_reads():
+    torch.manual_seed(0)
+    ctrl = A2CPID(
+        static_pid=StaticPID(law=VolTargetLaw(target_vol=0.25), kp=1.0),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(2)),
+        gain_hold=3,
+    )
+    inputs = []
+    for i in range(6):
+        ctrl.act(_state(vol_forecast=0.3 + 0.1 * i))
+        inputs.append(ctrl._last_pid_input.clone())
+
+    # Updated on bars 0 and 3 only
+    assert torch.equal(inputs[0], inputs[1])
+    assert torch.equal(inputs[0], inputs[2])
+    assert not torch.equal(inputs[0], inputs[3])
+    assert torch.equal(inputs[3], inputs[4])
+    assert torch.equal(inputs[3], inputs[5])
+
+    ctrl.reset()
+    ctrl.act(_state(vol_forecast=0.9))
+    assert not torch.equal(inputs[3], ctrl._last_pid_input)
+
+    with pytest.raises(ValueError, match="gain_hold"):
+        A2CPID(
+            static_pid=StaticPID(law=VolTargetLaw(target_vol=0.25)),
+            pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(2)),
+            gain_hold=0,
+        )
+
+
+def test_gain_hold_differentiable_action_matches_held_action():
+    torch.manual_seed(0)
+    ctrl = A2CPID(
+        static_pid=StaticPID(law=VolTargetLaw(target_vol=0.25), kp=1.0),
+        pid_net=PIDNet(input_size=PIDNetInputBuilder.input_size(2)),
+        gain_hold=3,
+    )
+    for i in range(3):
+        action = ctrl.act(_state(vol_forecast=0.4 + 0.1 * i))
+        pos, _ = ctrl.differentiable_action()
+        assert pos.item() == pytest.approx(action, rel=1e-6)

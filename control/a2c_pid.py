@@ -29,24 +29,33 @@ class A2CPID:
             input_size must match the normalizer's feature count.
         normalizer: selects and normalizes the model features.
         input_builder: keeps the 2-step position history for the pid_net input.
+        gain_hold: bars a network gain prediction is held before re-evaluating
+            PIDNet. Setting this to 24 (matching direction_hold and update_every)
+            eliminates hourly fee chatter while keeping the PID law active every bar.
     """
 
     static_pid: StaticPID
     pid_net: PIDNet
     normalizer: FeatureNormalizer = field(default_factory=lambda: FeatureNormalizer(DEFAULT_FEATURES))
     input_builder: PIDNetInputBuilder = field(default_factory=PIDNetInputBuilder)
+    gain_hold: int = 1
 
     # Populated during act() so training can rebuild the action with gradient
     _last_pid_input: torch.Tensor | None = field(default=None, init=False, repr=False)
     _last_ctx: StepContext | None = field(default=None, init=False, repr=False)
+    _held_dyn: tuple[float, ...] | None = field(default=None, init=False, repr=False)
+    _gain_age: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self):
+        if self.gain_hold < 1:
+            raise ValueError("gain_hold must be at least 1")
         expected = PIDNetInputBuilder.input_size(len(self.normalizer))
         if self.pid_net.input_size != expected:
             raise ValueError(
                 f"pid_net.input_size is {self.pid_net.input_size}, but {len(self.normalizer)} "
                 f"features need {expected}; build PIDNet with input_size={expected}"
             )
+        self._gain_age = self.gain_hold
 
     @property
     def law(self) -> VolTargetLaw:
@@ -61,20 +70,28 @@ class A2CPID:
         require_columns(state, self.required_fields, "A2CPID.act")
 
         ctx = self.law.begin_step(state)
-        pid_input = self.input_builder.build(ctx.errors, self.law.integral_limit, self.normalizer.transform(state))
+        norm_features = self.normalizer.transform(state)
+        if self._gain_age >= self.gain_hold or self._last_pid_input is None or self._held_dyn is None:
+            pid_input = self.input_builder.build(ctx.errors, self.law.integral_limit, norm_features)
+            with torch.no_grad():
+                dyn = self.pid_net(pid_input)
+            self._held_dyn = tuple(float(g) for g in dyn)
+            self._last_pid_input = pid_input
+            self._gain_age = 0
+        self._gain_age += 1
 
-        with torch.no_grad():
-            kp_d, ki_d, kd_d = (float(g) for g in self.pid_net(pid_input))
+        kp_d, ki_d, kd_d = self._held_dyn[0], self._held_dyn[1], self._held_dyn[2]
+        bias_d = self._held_dyn[3] if len(self._held_dyn) == 4 else 0.0
 
         action = self.law.commit(
             ctx,
             self.static_pid.kp + kp_d,
             self.static_pid.ki + ki_d,
             self.static_pid.kd + kd_d,
+            bias=bias_d,
         )
         self.input_builder.record(action)
 
-        self._last_pid_input = pid_input
         self._last_ctx = ctx
         return action
 
@@ -88,11 +105,13 @@ class A2CPID:
         if self._last_pid_input is None or self._last_ctx is None:
             raise RuntimeError("differentiable_action called before any act()")
         dyn = self.pid_net(self._last_pid_input)
+        bias_d = dyn[3] if dyn.shape[-1] == 4 else 0.0
         position = self.law.position(
             self._last_ctx,
             self.static_pid.kp + dyn[0],
             self.static_pid.ki + dyn[1],
             self.static_pid.kd + dyn[2],
+            bias=bias_d,
         )
         return position, dyn
 
@@ -102,3 +121,5 @@ class A2CPID:
         self.input_builder.reset()
         self._last_pid_input = None
         self._last_ctx = None
+        self._held_dyn = None
+        self._gain_age = self.gain_hold

@@ -46,6 +46,25 @@ def test_vol_tracking_loss_is_symmetric_in_position_sign():
     assert a.item() == pytest.approx(b.item())
 
 
+def test_downside_weighted_qlike_penalizes_losses_more_and_keeps_gaussian_optimum():
+    loss_down = vol_tracking_loss(torch.tensor(0.5), -0.02, 0.3, 8760, downside_weight=1.5)
+    loss_up = vol_tracking_loss(torch.tensor(0.5), 0.02, 0.3, 8760, downside_weight=1.5)
+    assert loss_down.item() > loss_up.item()
+
+    sigma, target, n = 0.8, 0.2, 200_000
+    returns = torch.randn(n, generator=torch.Generator().manual_seed(0)) * sigma / math.sqrt(8760)
+    grid = torch.linspace(0.05, 0.6, 56)
+    losses = [vol_tracking_loss(u, returns, target, 8760, downside_weight=1.5).mean().item() for u in grid]
+    best = grid[int(torch.tensor(losses).argmin())].item()
+    assert best == pytest.approx(target / sigma, abs=0.02)
+
+
+@pytest.mark.parametrize("bad_w", [0.0, -0.5, 2.0, 2.5])
+def test_downside_weight_out_of_range_rejected(bad_w):
+    with pytest.raises(ValueError, match="downside_weight"):
+        vol_tracking_loss(torch.tensor(0.5), 0.01, 0.3, 8760, downside_weight=bad_w)
+
+
 def test_td_error_matches_definition():
     v_curr = torch.tensor(0.5)
     v_next = torch.tensor(0.8)
