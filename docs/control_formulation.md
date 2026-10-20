@@ -34,7 +34,9 @@ $$
 - $e_k = \log(\text{target} / \hat\sigma_k)$, where $\hat\sigma_k$ is the 7-day
   realized vol (the measured disturbance).
 - $e_{\text{int},k} = \sum_{j<k} \log(\text{target} / \text{pv}_j)$, where
-  $\text{pv}_j$ is the realized vol of the controller's own last 168 returns.
+  $\text{pv}_j$ is the realized vol of the controller's own last 168 **invested**
+  (non-zero position) returns. Flat bars are skipped so flat stretches neither
+  dilute `portfolio_vol` with zeros nor wind up the integral upon re-entry.
   This is the feedback path: it depends on past actions.
 - $e_{d,k} = e_k - e_{k-1}$.
 
@@ -44,8 +46,11 @@ space ($u = K_p(\text{target} - \sigma)$) no choice of gains reproduces it,
 which is why the original formulation held about 0.2x exposure and never got
 near its target.
 
-Anti-windup is conditional integration: when exposure is pinned at
-`max_position`, errors that would push it further up are not accumulated.
+Anti-windup works on both the loop and the backward pass: conditional
+integration stops accumulating positive errors when exposure is pinned at
+`max_position`, and training uses an inward-gradient clamp (`_AntiWindupClamp`)
+that blocks outward gradients when already saturated while passing inward
+gradients that pull exposure back inside bounds.
 
 ## Static gains
 
@@ -88,6 +93,12 @@ $$
 The static gains are the baseline controller. The network output starts near
 zero, so A2C-PID starts out identical to it, and per-gain bounds keep the
 adaptation local.
+
+`gain_bounds` can optionally take a 4th value `[kp, ki, kd, bias]`, which adds
+a bounded feedforward log-exposure offset $\Delta b(s_t)$ directly inside the
+exponent. `a2c_pid.gain_hold` (e.g. `24`, matching `direction_hold` and
+`update_every`) holds the network's gain adjustments across `gain_hold` bars so
+online adaptation aligns with daily optimizer steps without hourly fee chatter.
 
 ## Learning signal
 

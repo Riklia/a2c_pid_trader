@@ -51,10 +51,10 @@ the 0.25 target on the test series, lower is better, mean over 5 seeds.
 
 | scenario | static PID | A2C frozen | A2C online | online better |
 |---|---|---|---|---|
-| design correct (control case) | 0.0142 | 0.0143 | 0.0136 | 5/5, tiny margin |
-| forecast bias 2× appears after training | 0.0639 | 0.0884 | **0.0239** | 5/5, 2.7× |
-| forecast bias drifts 1× → 2× | 0.0304 | 0.0473 | **0.0166** | 5/5, 1.8× |
-| vol regime switching, lagging forecast | 0.0598 | 0.0602 | 0.0596 | 3/5, tie |
+| design correct (control case) | 0.0142 | 0.0143 | 0.0137 | 4/5, tiny margin |
+| forecast bias 2× appears after training | 0.0639 | 0.0897 | **0.0269** | 5/5, 2.4× |
+| forecast bias drifts 1× → 2× | 0.0304 | 0.0484 | **0.0159** | 5/5, 1.9× |
+| vol regime switching, lagging forecast | 0.0598 | 0.0603 | 0.0591 | 3/5, tie |
 
 ## Real data (walk-forward)
 
@@ -153,6 +153,48 @@ More history does not help: online A2C is the same either way (it adapts
 to the current market while trading), and frozen A2C gets slightly worse
 (older market behavior partly misleads it). Rolling stays the default; it
 is also ~6× cheaper to train.
+
+## Multi-asset & daily gain-scheduling results (post-windup & gradient fixes)
+
+Four control and optimization fixes unlocked consistent out-of-sample gains for
+online `PIDNet` even when the static design is well-specified (`max_position = 2.0`,
+single-asset 6 features, 3 seeds):
+
+1. Skipping flat bars in `VolTargetLaw.portfolio_vol()` so flat periods do not
+   dilute realized portfolio vol with zeros or cause false integral windup on re-entry.
+2. Inward-gradient anti-windup clamp (`_AntiWindupClamp`) at `max_position` so
+   saturated bars still transmit gradients that pull exposure back inside bounds.
+3. Carrying Adam optimizer moment buffers from training into `run_online` instead
+   of cold-starting at the start of every test quarter.
+4. Daily gain scheduling (`gain_hold = 24`), aligning network gain updates with
+   `direction_hold = 24` and `update_every = 24`.
+
+Stitched full-period out-of-sample performance (2021–2026, 3-seed mean for A2C):
+
+| Asset / Portfolio (`max_position = 2.0`) | Controller | Total return | CAGR | Full Sharpe | Max DD | Notes vs `static_pid` |
+|---|---|---|---|---|---|---|
+| **BTCUSDT** (21 quarters, `gh=24, w_gain=0.1`) | `buy_hold` | +26.0% | +4.56% | +0.080 | 76.8% | — |
+| | `vol_target` | +135.3% | +17.98% | +0.615 | 35.5% | — |
+| | `static_pid` | +150.9% | +19.45% | +0.664 | 35.8% | — |
+| | `a2c_pid` (frozen) | +153.7% | +19.70% | +0.664 | 35.1% | 12/21 Sharpe wins |
+| | **`a2c_online`** | **+163.9%** | **+20.62%** | **+0.693** | **35.0%** | **13/21 Sharpe, 13/21 DD, +1.17 pp/yr CAGR** |
+| **BTCUSDT** (21 quarters, `gh=24, w_gain=0.3`) | **`a2c_online`** | **+157.8%** | **+20.08%** | **+0.681** | **35.4%** | **14/21 Sharpe (`p=0.095`), 15/21 return (`p=0.039`), 11/16 on unseen holdout** |
+| **ETHUSDT** (20 quarters, `gh=1, w_gain=0.1`) | `buy_hold` | −21.7% | −4.85% | −0.070 | 81.1% | — |
+| | `vol_target` | +134.3% | +18.85% | +0.664 | 34.4% | — |
+| | `static_pid` | +144.1% | +19.85% | +0.701 | 34.1% | — |
+| | `a2c_pid` (frozen) | +160.1% | +21.40% | +0.738 | 34.9% | 13/20 Sharpe wins |
+| | **`a2c_online`** | **+165.0%** | **+21.86%** | **+0.756** | **34.0%** | **13/20 Sharpe & return (+0.050 Sharpe, +2.01 pp/yr CAGR)** |
+| **ETHUSDT** (20 quarters, `gh=24, w_gain=0.3`) | **`a2c_online`** | **+150.3%** | **+20.46%** | **+0.717** | **34.3%** | **12/20 Sharpe & return, same turnover as static (`8.9`)** |
+| **3-Asset Equal-Weight** (BTC+ETH+BNB, 2021–2026) | `buy_hold` | +15.0% | +2.73% | +0.045 | 76.0% | — |
+| | `vol_target` | +143.3% | +18.69% | +0.738 | 32.8% | — |
+| | `static_pid` | +151.4% | +19.43% | +0.774 | 32.3% | — |
+| | `a2c_pid` (frozen) | +156.0% | +19.85% | +0.778 | 33.0% | — |
+| | **`a2c_online`** | **+159.5%** | **+20.16%** | **+0.791** | **32.6%** | **Best CAGR & Sharpe overall** |
+
+Key findings from ablations:
+
+- **How `PIDNet` adds value:** Across all 21/21 BTC folds, `corr(pos_online - pos_static, pos_static) = -0.648` at virtually identical turnover (`11.7–11.9` vs `11.5` static). The network learns online that 7-day volatility mean-reverts and damps effective $K_p$ below `1.0`, avoiding excessive leverage in quiet regimes and over-cutting after volatility spikes.
+- **What did not help:** An unfiltered hourly feedforward `bias = 0.5` with noisy 1h `hl_range` features doubled turnover (`17.2–20.3` vs `11.5`, costing ~96 bps/yr in extra fees) and dropped BTC CAGR to `+17.9%–18.6%` (recovering to `+20.49%` only when paired with `gain_hold = 24` and smooth features, still behind the simpler 3-gain network). Even small positive `w_return` values (`0.02`, `0.05`, `0.10`) underperformed `w_return = 0.0` on tuning folds `0..4`.
 
 ## Caveats
 
