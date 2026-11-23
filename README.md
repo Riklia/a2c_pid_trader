@@ -1,39 +1,39 @@
 # a2c_pid_trader
 
-A self-tuning PID controller that sizes crypto positions so that portfolio
-volatility tracks a configured target. Adapts the actor-critic architecture
-from Sharifi & Alasty, [Self-Tuning PID Control via a Hybrid
-Actor-Critic-Based Neural Structure for Quadcopter Control][paper] (2022),
-originally for quadcopter attitude control, to a financial setting.
+A self-tuning PID controller that sizes crypto positions to keep portfolio volatility near a target (default: 35% annualized).
+
+Inspired by Sharifi & Alasty ([2022][paper]), this project keeps an interpretable PID control law as the trading policy and uses a small neural network (`PIDNet`) to adjust the PID gains online as market volatility shifts.
 
 [paper]: https://arxiv.org/abs/2307.01312
 
-The core idea: a classical PID has three fixed gains. A classical PID on
-crypto cannot stay optimal across different volatility regimes. This project
-keeps the PID structure but lets a neural network nudge the gains online in
-response to recent market state. Actor and critic are the learning
-machinery, not the policy. The policy is still a PID.
-
-## Run
+## Quick start
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env    # fill in DEV_DB_DSN
-python scripts/run_walk_forward.py configs/walk_forward.json --workers 8   # folds in parallel
-python scripts/plot_run.py results/run_<timestamp>
-python scripts/describe_features.py configs/walk_forward.json   # what the model sees
+cp .env.example .env    # set DEV_DB_DSN for Postgres
 ```
 
-For stepping through the environment manually:
+Run a walk-forward backtest (1-year train, 3-month test sliding across history):
 
 ```bash
-streamlit run tools/env_viewer/app.py
+python scripts/run_walk_forward.py configs/walk_forward.json --workers 8
+python scripts/plot_run.py results/run_<timestamp>
 ```
 
-## More
+Other useful scripts:
 
-- [docs/overview.md](docs/overview.md): what the system does and how it's wired together
-- [docs/control_formulation.md](docs/control_formulation.md): the control-theory framing with the math
-- [docs/results.md](docs/results.md): what the experiments show and how to reproduce them
-- [docs/features.md](docs/features.md): which inputs the model uses, how they are normalized, how to add or remove one
-- [docs/debugging.md](docs/debugging.md): tools and workflows when something looks wrong
+```bash
+python scripts/describe_features.py configs/walk_forward.json   # inspect model inputs
+python scripts/compare_runs.py results/run_*                    # paired stats vs static PID
+python scripts/synthetic_benchmark.py --seeds 5 --workers 8     # test on synthetic vol regimes
+python scripts/grid_search.py configs/grid_search.json          # hyperparameter search
+streamlit run tools/env_viewer/app.py                           # step through bars in a UI
+```
+
+## Documentation
+
+- [docs/overview.md](docs/overview.md) — how the system works end to end
+- [docs/control_formulation.md](docs/control_formulation.md) — the PID control law, static tuning, and online learning math
+- [docs/results.md](docs/results.md) — benchmark results and how to reproduce them
+- [docs/features.md](docs/features.md) — input features, normalization, and how to change them
+- [docs/debugging.md](docs/debugging.md) — common issues and how to check if the model is learning

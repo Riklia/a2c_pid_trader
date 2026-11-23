@@ -1,127 +1,63 @@
 # Overview
 
-## What problem the project solves
+## What this project does
 
-Volatility targeting is a standard risk-control technique: pick a target
-portfolio volatility and size each position so that the portfolio hits 
-that target. When the market is calm, hold more. When the market is 
-turbulent, hold less.
+**Volatility targeting** scales position size inversely with market volatility so portfolio risk stays steady: hold more when the market is calm, and hold less when it is turbulent.
 
-Doing this with a fixed-gain PID does not work well on crypto, because
-crypto has long regimes with very different realized volatility. A set of
-gains tuned on 2023 behaves badly in 2024, and vice versa. This project
-asks: can a neural network tune the PID gains online, bar by bar, so the
-same controller works across regimes?
+In crypto, a fixed-gain PID controller struggles when volatility regimes shift or when the volatility forecast lags. This project keeps the PID formula as the policy, but adds a small neural network (`PIDNet`) that nudges the PID gains $(K_p, K_i, K_d)$ online from recent market state.
 
-## How it works, end to end
+> **Why is it called `a2c_pid`?** The project started as an Actor-Critic implementation following Sharifi & Alasty (2022). Because market returns are exogenous (our trades do not move the market), each bar's loss is directly differentiable with respect to position size. We replaced the noisy Actor-Critic TD update with exact pathwise gradients through the control law, while keeping the `A2CPID` class and config names for compatibility.
 
-A single walk-forward experiment does this:
+## How a single bar works
 
-1. Pull BTCUSDT minute candles and funding snapshots from Postgres.
-2. Resample to hourly, align funding (every 8 hours), compute realized
-   volatility (24h), the 7-day volatility forecast used for sizing and the
-   momentum signals used for direction. Funding history starts years after
-   price history; bars before the first funding snapshot are kept with zero
-   funding instead of being dropped.
-3. Slice the resulting series into fold pairs: one year of training
-   followed by three months of test, sliding forward.
-4. For each fold:
-   - Run three baselines on the test window: buy & hold, plain vol
-     targeting, and the static PID.
-   - For each seed, freshly initialize an A2C-PID controller on top of
-     the *same* static PID, run it online through the training window
-     with the network learning in place, then freeze it and run it
-     through the test window.
-5. Write everything into a timestamped results directory.
-
-## How a single step works
-
-Direction and size are decided separately:
+Position direction and position size are decided separately:
 
 $$
-\text{position} = \text{direction} \times \min\!\left(e^{K_p e + K_i e_\text{int} + K_d e_d},\ \text{max\_position}\right)
+u_k = \text{direction}_k \times \min\left(\exp\big(K_p e_k + K_i e_{\text{int},k} + K_d e_{d,k}\big),\ u_{\max}\right)
 $$
 
-- **Direction** comes from 30-day time-series momentum by default
-  (`trend_long_flat` on `mom_720h`): long when the last 30 days' log
-  return is positive, flat otherwise, re-decided once a day
-  (`direction_hold`) to avoid whipsaw fees. Other modes: long only, a
-  30-day moving-average filter (`trend`), long/short. Vol targeting
-  manages risk, it does not predict direction, so profit has to come from
-  here. Without a direction signal every controller is mostly BTC beta: it
-  wins exactly when BTC rises.
-- **Size** is a PID in log space on $e = \log(\text{target}/\hat\sigma)$.
-  With $K_p = 1$, $K_i = K_d = 0$ it is exactly textbook vol targeting,
-  $\text{target}/\hat\sigma$. The integral term accumulates
-  $\log(\text{target}/\text{portfolio vol})$, measured from the
-  controller's own realized returns, so it closes the loop on what the
-  portfolio actually experienced.
+1. **Direction (`direction_k`):** Decided by 30-day time-series momentum (`mom_720h`) by default. If the last 30 days' return is positive, direction is `+1` (long); otherwise `0` (flat in cash). Updated once per day (`direction_hold = 24`) to avoid whipsaw fees.
+2. **Base size (`StaticPID`):** Computed in log space from three error signals:
+   - $e_k = \log(\text{target} / \hat\sigma_k)$ compares target volatility (35%) to the 7-day market volatility forecast (when `Kp = 1` and `Ki = Kd = 0`, size is simply `target / vol_forecast`).
+   - $e_{\text{int},k}$ sums past tracking errors using the portfolio's own realized volatility (`pv`) over the last 168 *invested* (non-flat) bars.
+   - $e_{d,k} = e_k - e_{k-1}$ measures how fast the volatility forecast is changing.
+3. **Adaptive gain nudge (`PIDNet`):** A small MLP (`32×32`) reads recent positions, the three PID errors, and z-scored market features, and outputs bounded adjustments $(\Delta K_p, \Delta K_i, \Delta K_d)$ added to the static gains. Updates can be held for `gain_hold` bars (e.g., 24h) to keep turnover low.
+4. **Execution (`TradingEnv`):** The position $u_k$ is applied to the *next* bar's simple return, minus a 4 bps fee on position changes and 8-hour perpetual funding payments.
 
-At each bar, A2C-PID additionally feeds its last two positions, the
-law's three errors and the model features listed in `a2c_pid.features`
-(which can include other symbols' data, see [features.md](features.md))
-into a small MLP that outputs bounded gain adjustments added to the
-static gains.
+## How training works
 
-The environment then applies that position against the next bar's
-(simple) return, charges a taker fee on turnover, and charges funding on
-the settlement bar if there is one.
-
-## What makes this not just a trading bot
-
-- **The policy is a PID, not a neural network.** The MLP outputs gain
-  deltas, not actions. With an untrained network the controller is
-  exactly its static PID, and the learned gains stay interpretable
-  ($K_p < 1$: react less to vol spikes, $K_p > 1$: react more).
-- **Online, no replay buffer.** The network trains in one pass over the
-  training window, bar by bar, accumulating gradients over `update_every`
-  bars per optimizer step.
-
-## Training objective
-
-The market does not react to the position, so the loss of each bar is a
-known, differentiable function of the position, and the gradient can be
-taken straight through it into the network (no critic needed):
+Because the market is exogenous, we don't need a critic network or replay buffer. The controller runs online through the data, bar by bar, and accumulates exact gradients over `update_every` (24) bars before taking an Adam step:
 
 $$
-L_k = -w_\text{return}\,U_k + C_k + w_\text{track}\,Q_k + w_\text{gain}\,\lVert \Delta K / K_\text{bound} \rVert^2
+L_k = w_{\text{track}}\,Q_k + C_k + w_{\text{gain}}\,\lVert \Delta K / K_{\text{bound}} \rVert^2 - w_{\text{return}}\,U_k
 $$
 
-- $U_k = u_k r_{k+1} - \tfrac{\lambda}{2}(u_k r_{k+1})^2$: mean-variance
-  utility of the bar's return.
-- $C_k$: fee on turnover plus funding, mirroring the environment.
-- $Q_k = (u_k r_{k+1})^2 N / \text{target}^2 - \log u_k^2$: QLIKE tracking
-  loss, minimized in expectation exactly at $|u| = \text{target}/\sigma$.
+- **Volatility tracking ($Q_k$):** Quasi-likelihood (QLIKE) loss on next bar's realized portfolio variance:
 
-Single-bar returns are almost pure noise, while volatility is predictable,
-so the tracking term carries far more learnable signal than the utility.
-The default config therefore trains on tracking plus costs
-($w_\text{return} = 0$).
+$$
+Q_k = \frac{(u_k r_{k+1})^2 N}{\text{target}^2} - \log(u_k^2)
+$$
 
-## Guarantees against look-ahead
+  Its minimum in expectation is exactly $|u_k| = \text{target} / \sigma_{\text{true}}$.
+- **Trading costs ($C_k$):** Exact turnover fee plus funding payment.
+- **Gain penalty ($w_{\text{gain}}$):** L2 penalty that keeps $\Delta K$ near zero unless adaptation clearly helps.
+- **Return utility ($U_k$, disabled by default):** Hourly returns are ~30× noisier than volatility, so training on returns (`w_return > 0`) hurts out-of-sample performance. Default is `w_return = 0`.
 
-Three places where the pipeline could leak future information, each
-blocked:
+## How a walk-forward experiment runs
 
-- Funding alignment uses only funding snapshots up to each bar's close.
-- The environment applies a chosen position to the *next* bar's return,
-  never the current bar.
-- A regression test rebuilds features from a truncated prefix and asserts
-  that values up to the cutoff are bit-identical to the full version.
+1. Load 1-minute candles and funding rates from Postgres, resample to 1-hour bars, and compute features (cached in `.cache/features/`). Bars before funding history starts are kept with `funding = 0`.
+2. Split history into sliding windows: **1 year (8760 bars) of training** followed by **3 months (2160 bars) of testing**, stepping forward by 3 months (21 test folds on BTC from 2021 to 2026).
+3. On each fold, evaluate five controllers on the test quarter:
+   - `buy_hold` — constant `1.0` position.
+   - `vol_target` — proportional sizing only ($K_p=1, K_i=K_d=0$) with the same momentum direction filter.
+   - `static_pid` — fixed analytically derived gains ($K_p=1, K_i=1/168, K_d=0$).
+   - `a2c_pid` (frozen) — trained on the 1-year train window, weights frozen during the test quarter.
+   - `a2c_online` — trained on the 1-year train window, and continues updating weights every 24 bars during the test quarter (using only already-realized returns).
+4. Save config, per-fold metrics (`metrics.csv`), and bar-by-bar traces (`traces/*.parquet`) into `results/run_<timestamp>/`.
 
-## What goes into a results directory
+## No look-ahead guarantees
 
-Every walk-forward invocation creates a new `results/run_<timestamp>/`.
-Nothing is overwritten. The directory contains:
-
-- The exact config that produced the run.
-- CSV with metrics: one row per (fold, controller, seed) with return,
-  Sharpe, drawdown, realized vol, rolling vol tracking RMSE, turnover,
-  and beta/alpha against BTC. Beta is the part of the return that came from
-  simply being exposed to BTC; alpha (annualized) is what is left. A
-  long-only controller gains whenever BTC rises, so judge strategies by
-  alpha and Sharpe, not by total return in an up quarter.
-- Per-fold raw traces: equity, position, reward, action at each bar.
-
-This is enough to re-plot, re-evaluate, or diff two experiments without
-re-running training.
+- Every feature at bar $k$ uses only data up to bar $k$'s close.
+- Position $u_k$ is applied strictly to bar $k+1$'s return.
+- Online updates in `a2c_online` only use realized returns from completed bars.
+- Unit tests verify bit-identical feature tables when truncating future data.
